@@ -56,7 +56,15 @@ Above is the configuration I suggest using if you'd like a quick and easy demons
 
 **Setup**
 1. Create a Python venv and install all requirements in ``requirements.txt``
-2. Ensure your WiFi card is unmanaged. The easiest way to accomplish this is stopping NetworkManager.
+2. Keep NetworkManager away from the LDN interfaces. Marking your WiFi card unmanaged is **not enough**: the join creates a fresh `ldnclient` interface mid-run, NetworkManager grabs it and points wpa_supplicant at it, and the join then fails with `[Errno 114] Match already configured`. Install a config that excludes the LDN interfaces by name:
+
+   ```
+   # /etc/NetworkManager/conf.d/zz-ldn-unmanaged.conf
+   [keyfile]
+   unmanaged-devices=interface-name:ldnclient;interface-name:ldn;interface-name:ldn-mon;interface-name:ldn-tap
+   ```
+
+   then `sudo systemctl restart NetworkManager`. Name the file `zz-*` so it sorts last: some distros (e.g. Linux Mint's `ubuntu-system-adjustments.conf`) ship a later-sorting file that sets `unmanaged-devices=none` and silently overrides yours. Verify with `NetworkManager --print-config | grep unmanaged` — it must show the `interface-name:ldn...` list. (Stopping NetworkManager entirely also works, but the config file is a one-time setup that survives reboots.)
 3. Ensure you can become root. The script requires root to run.
 
 **Step-by-step Usage**
