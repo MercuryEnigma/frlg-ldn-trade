@@ -89,10 +89,22 @@ def test_flag_id_maps_to_receipt_flag():
         raise AssertionError(f"flagId {bad} should be rejected")
 
 
-def test_lansat_gift_bundle():
-    card, script = wonder_card.build_lansat_berry_gift()
-    assert len(card) == 332 and len(script) == 19
-    assert mg.crc16(card) == 0x82BD   # anchor for the assembled card
+def test_berry_gift_bundle():
+    """The two-berry gift: giveitem LANSAT(173) then LIECHI(168), one setflag, one endram."""
+    card, script = wonder_card.build_berry_gift()
+    assert len(card) == 332 and len(script) == 31
+    assert mg.crc16(card) == 0x1B48   # anchor for the assembled card
+    assert script == bytes([
+        0x6A, 0x5A,                      # lock; faceplayer
+        0x1A, 0x00, 0x80, 0xAD, 0x00,    # setorcopyvar VAR_0x8000, LANSAT(173)
+        0x1A, 0x01, 0x80, 0x01, 0x00,    # setorcopyvar VAR_0x8001, 1
+        0x09, 0x00,                      # callstd STD_OBTAIN_ITEM
+        0x1A, 0x00, 0x80, 0xA8, 0x00,    # setorcopyvar VAR_0x8000, LIECHI(168)
+        0x1A, 0x01, 0x80, 0x01, 0x00,    # setorcopyvar VAR_0x8001, 1
+        0x09, 0x00,                      # callstd STD_OBTAIN_ITEM
+        0x29, 0xAA, 0x02,                # setflag 0x2AA (one receipt flag for the whole gift)
+        0x6C, 0x0D,                      # release; endram
+    ])
 
 
 # --- Parent-side 0x54 framing (sim as leader/parent) -----------------------------------------

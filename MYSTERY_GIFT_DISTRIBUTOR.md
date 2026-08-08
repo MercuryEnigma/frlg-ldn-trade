@@ -2,6 +2,7 @@
 
 Status doc for adding a **Mystery Gift distributor** capability to `frlg-ldn-trade`: letting the
 Python program hand a real FireRed/LeafGreen console a **Lansat Berry** (`ITEM_LANSAT_BERRY = 173`)
+plus a **Liechi Berry** (`ITEM_LIECHI_BERRY = 168`)
 via a saved Wonder Card whose RAM script the in-game **deliveryman** runs.
 
 Companion docs: [SKILLS.md](SKILLS.md) (Python stack), [pokefirered/SKILLS.md](pokefirered/SKILLS.md)
@@ -57,7 +58,7 @@ Runs the FRLG ROM (retail or a pokefirered build). Two uses:
   `RamScript` (checksum + body) at `SaveBlock1.ramScript` (offset **0x361C**), fix the affected
   save-sector footer checksums (`SECTOR_DATA_SIZE = 3968`, `CalculateChecksum`, save.c), OR poke those
   fields in RAM at runtime via mGBA's Lua scripting. Then walk to the Pokémon Center deliveryman and
-  confirm the **Lansat Berry** is received and the one-shot (`setflag 0x2AA` / `endram`) holds.
+  confirm the **Lansat + Liechi Berries** are received and the one-shot (`setflag 0x2AA` / `endram`) holds.
 - **(2b) RFU/link protocol peer — investigate.** IF mGBA's GBA-Wireless-Adapter emulation is
   sufficient and exposes a link socket, drive the FRLG ROM as the MG *client* from Python at the RFU
   level to validate the parent link + MG transport **without** the Switch. mGBA wireless-adapter
@@ -168,8 +169,8 @@ against a faithful Python model of `MysteryGiftClient` before any hardware.
 | Step | Status | Files | Test tier & method |
 |---|---|---|---|
 | `WonderCard` (332B) builder — passes `ValidateWonderCard` | ✅ | `wonder_card.py` | **1** size + field-range asserts |
-| Delivery RAM script (`giveitem LANSAT,1; setflag 0x2AA; endram`) | ✅ | `wonder_card.py` | **1** byte-exact vs event.inc opcodes |
-| **Deliveryman actually gives the berry** (card+script effect in-game) | ⬜ | (save/RAM injection tooling) | **2a** mGBA save/RAM injection → walk to deliveryman → berry + one-shot; **3** final end-to-end |
+| Delivery RAM script (`giveitem LANSAT,1; giveitem LIECHI,1; setflag 0x2AA; endram`) | ✅ | `wonder_card.py` | **1** byte-exact vs event.inc opcodes |
+| **Deliveryman actually gives the berries** (card+script effect in-game) | ⬜ | (save/RAM injection tooling) | **2a** mGBA save/RAM injection → walk to deliveryman → berries + one-shot; **3** final end-to-end |
 | Clean close (`0x5F00 READY_CLOSE_LINK`; drive `0x6600` standby counter) | ⬜ | `mystery_gift.py`/`rfu.py` | **3** live (console self-disconnects, force-saves) |
 
 ### Engine & CLI wiring (spans M1–M3)
@@ -179,7 +180,7 @@ against a faithful Python model of `MysteryGiftClient` before any hardware.
 | `MysteryGiftEngine` (`mg_engine.py`) implementing the `Sim` duck-typed interface; wire into `make_engine`/`run_live` + CLI `--host` | ⬜ | new `frlgsim/mg_engine.py`, `frlgtrade.py`, `sim.py` | **1** import/smoke + duck-type conformance; **3** live end-to-end |
 
 ### End-to-end (Tier 3)
-Console shows "Wonder Card received", force-saves, deliveryman later hands over the Lansat Berry;
+Console shows "Wonder Card received", force-saves, deliveryman later hands over the Lansat + Liechi Berries;
 talking again does nothing (one-shot). This is the only fully-Switch-gated result.
 
 ---
@@ -192,7 +193,8 @@ New files:
 - `frlgsim/mystery_gift.py` — `crc16()` (proven equal to the game's table-driven `CalcCRC16WithTable`,
   util.c:250), MG_LINKID idents, buffer sizes, Wonder Card enums.
 - `frlgsim/wonder_card.py` — `build_wonder_card()` (332B, passes `ValidateWonderCard`),
-  `build_delivery_ram_script()` (byte-exact deliveryman script), `build_lansat_berry_gift()`.
+  `build_delivery_ram_script()` (byte-exact deliveryman script, multi-item), `build_berry_gift()`
+  (Lansat + Liechi).
 - `frlgsim/beacon.py` — host beacon encoder (first cut): `b85_encode` (inverse of `_b85_decode`),
   `build_beacon` / `build_record` / `game_data_word`, `mutate_beacon` (clone a real capture + tweak).
 - `host_spike.py` — runnable HW-0/HW-A harness (stands up the AP + beacon, logs joins; no gift).
@@ -209,7 +211,7 @@ Modified (purely additive; existing child/trade path unaffected — verified):
   (acks + reassembles the child's game data), `decode_child_ni_slot`, `parent_recv_ack_slot`.
 
 What the tests prove: CRC16 correctness (+ regression anchors), Wonder Card size/validation +
-rejection of bad fields, the exact Lansat RAM-script bytes, flagId→receipt-flag mapping, the 70-byte
+rejection of bad fields, the exact berry-gift RAM-script bytes, flagId→receipt-flag mapping, the 70-byte
 echo table round-tripping through `parse_in` into 5 mpId rows, the `0x7700`/`0xA100` payloads, the
 60-byte `LinkPlayerBlock` magics, and the **parent NI handshake**: the shared NI sequence reproduces
 the verified child sender; the parent join-status frames, once wrapped in a HOST `'T'` and parsed,
@@ -245,7 +247,7 @@ status 5; and the `ParentNIReceiver` acks the child's game-data NI and reassembl
 Two Tier-1/Tier-2 tasks can proceed **without the Switch** and de-risk the most:
 1. **M2 transport + server driver against a Python `MysteryGiftClient` model** (Tier 1) — validates the
    whole gift conversation in-process.
-2. **mGBA payload injection** (Tier 2a) — proves the Lansat Berry is actually delivered by the
+2. **mGBA payload injection** (Tier 2a) — proves the berries are actually delivered by the
    deliveryman from our exact card + RAM-script bytes.
 
 The remaining M1 host layers (Pia host FSM, HostTransport, beacon visibility) are Tier-3 and best done

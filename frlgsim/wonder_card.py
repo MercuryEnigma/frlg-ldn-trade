@@ -31,6 +31,7 @@ WONDER_CARD_TEXT_LENGTH = 40        # per text field
 WONDER_CARD_BODY_TEXT_LINES = 4
 WONDER_CARD_SIZE = 332              # sizeof(struct WonderCard): 330 data + 2 pad (u32 idNumber align)
 
+ITEM_LIECHI_BERRY = 168            # [include/constants/items.h:172]
 ITEM_LANSAT_BERRY = 173            # [include/constants/items.h:177]
 
 # --- event-script opcodes used by the delivery script [asm/macros/event.inc] ------------------
@@ -66,17 +67,22 @@ def flag_for_flag_id(flag_id):
     return FLAG_WONDER_CARD_UNUSED_1 - 3 + idx
 
 
-def build_delivery_ram_script(item=ITEM_LANSAT_BERRY, flag=None, flag_id=None):
-    """Deliveryman script: lock, face player, `giveitem item, 1` (fanfare + "obtained" message),
-    set the receipt flag, release, `endram`. `endram` clears the RAM script so the gift is handed
-    over exactly once (afterwards the deliveryman has nothing to run and the card self-retires).
-    Pass either `flag` directly or `flag_id` (the card's flagId) to derive it."""
+def build_delivery_ram_script(item=ITEM_LANSAT_BERRY, flag=None, flag_id=None, items=None):
+    """Deliveryman script: lock, face player, `giveitem <item>, 1` per item (each with the standard
+    fanfare + "obtained" message), set the receipt flag, release, `endram`. `endram` clears the RAM
+    script so the gift is handed over exactly once (afterwards the deliveryman has nothing to run
+    and the card self-retires). Pass either `flag` directly or `flag_id` (the card's flagId) to
+    derive it. `items` (an iterable of item ids) overrides the single `item` - consecutive giveitem
+    blocks are fine (each callstd waits for the player's A-press before the next)."""
     if flag is None:
         flag = flag_for_flag_id(flag_id) if flag_id is not None else (FLAG_WONDER_CARD_UNUSED_1)
+    give = b""
+    for it in (list(items) if items is not None else [item]):
+        give += _setorcopyvar(_VAR_0x8000, it) \
+            + _setorcopyvar(_VAR_0x8001, 1) \
+            + bytes([_OP_CALLSTD, _STD_OBTAIN_ITEM])
     return bytes([_OP_LOCK, _OP_FACEPLAYER]) \
-        + _setorcopyvar(_VAR_0x8000, item) \
-        + _setorcopyvar(_VAR_0x8001, 1) \
-        + bytes([_OP_CALLSTD, _STD_OBTAIN_ITEM]) \
+        + give \
         + bytes([_OP_SETFLAG]) + _u16(flag) \
         + bytes([_OP_RELEASE, _OP_ENDRAM])
 
@@ -117,21 +123,22 @@ def build_wonder_card(*, flag_id=1003, icon_species=1, id_number=0,
     return bytes(out)
 
 
-def build_lansat_berry_gift():
+def build_berry_gift():
     """The Milestone-3 payload: a Wonder Card + deliveryman RAM script that hands over one
-    Lansat Berry. Returns (card_bytes_332, ram_script_bytes)."""
+    Lansat Berry and one Liechi Berry. Returns (card_bytes_332, ram_script_bytes)."""
     flag_id = 1003
     card = build_wonder_card(
         flag_id=flag_id, icon_species=1, id_number=0x4C414E53,  # "LANS"
-        title="LANSAT BERRY", subtitle="A gift for you",
-        body=("Visit the Mystery Gift man", "to receive your berry."),
+        title="BERRY GIFT", subtitle="A gift for you",
+        body=("Visit the Mystery Gift man", "to receive your berries."),
         footer1="frlg-ldn-trade")
-    script = build_delivery_ram_script(item=ITEM_LANSAT_BERRY, flag_id=flag_id)
+    script = build_delivery_ram_script(items=(ITEM_LANSAT_BERRY, ITEM_LIECHI_BERRY),
+                                       flag_id=flag_id)
     return card, script
 
 
 def _selftest():
-    card, script = build_lansat_berry_gift()
+    card, script = build_berry_gift()
     assert len(card) == WONDER_CARD_SIZE, len(card)
     # flagId, iconSpecies, bitfield readback
     assert int.from_bytes(card[0:2], "little") == 1003
@@ -140,9 +147,13 @@ def _selftest():
     assert ((bitfield >> 2) & 0xF) < 8
     assert ((bitfield >> 6) & 0x3) == SEND_TYPE_DISALLOWED
     assert card[9] == 0  # maxStamps
-    # RAM script: exact expected bytecode for `giveitem LANSAT(173), 1; setflag 0x2AA; endram`.
+    # RAM script: exact bytecode for `giveitem LANSAT(173), 1; giveitem LIECHI(168), 1;
+    # setflag 0x2AA; endram`.
     expected = bytes([0x6A, 0x5A,
                       0x1A, 0x00, 0x80, 0xAD, 0x00,
+                      0x1A, 0x01, 0x80, 0x01, 0x00,
+                      0x09, 0x00,
+                      0x1A, 0x00, 0x80, 0xA8, 0x00,
                       0x1A, 0x01, 0x80, 0x01, 0x00,
                       0x09, 0x00,
                       0x29, 0xAA, 0x02,
