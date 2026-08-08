@@ -20,3 +20,10 @@ pokefirered/
 # Nested standalone clone (Goppier/Gen3DistributionRoms) — its own git repo,
 # kept local so its changes never touch this repo.
 Gen3DistributionRoms/
+
+# Nested standalone clone (kinnay/LDN) — reference source for the LDN hosting
+# stack (@ 39d0b20 = v0.0.17, identical to the installed venv package).
+LDN/
+
+# Generated hosting-debug artifact (ldn_debug_report.sh output; system details)
+ldn-debug-report.txt

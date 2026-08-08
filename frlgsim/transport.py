@@ -564,3 +564,323 @@ class LiveTransport:
         if self._thread is not None:
             self._thread.join(timeout=2)
         light_cleanup(self.log)                         # delete the LDN vifs on teardown
+
+
+# --- hosting preflight ------------------------------------------------------
+def _parse_iw_modes(iw_phy_output):
+    """Parse `iw phy <phy> info` output -> (modes, software_modes): the interface types the DRIVER
+    registered with nl80211 ('Supported interface modes') and the virtual types the kernel can always
+    add on top ('software interface modes'). Pure function so it is unit-testable with canned output."""
+    modes, soft, section = [], [], None
+    for raw in iw_phy_output.splitlines():
+        s = raw.strip()
+        if s.startswith("Supported interface modes:"):
+            section = "modes"
+        elif s.startswith("software interface modes"):
+            section = "soft"
+        elif s.startswith("* ") and section:
+            (modes if section == "modes" else soft).append(s[2:].strip())
+        elif section and s and not s.startswith("* "):
+            section = None
+    return modes, soft
+
+
+def preflight_host(phyname, log=print, _iw_output=None):
+    """Check BEFORE ldn.create_network whether `phyname` can host, and fail with ONE clear verdict
+    instead of repeated ENOTSUP tracebacks. The authoritative signal is `iw phy` 'Supported interface
+    modes' - the capability set the kernel driver registers; it is NOT a setting (the MT7601U case:
+    managed+monitor only, so NL80211_CMD_NEW_INTERFACE(IFTYPE_AP) -> EOPNOTSUPP, always).
+
+    Returns True if the phy advertises AP mode; raises RuntimeError with the verdict otherwise.
+    `_iw_output` injects canned output for tests."""
+    if _iw_output is None:
+        try:
+            _iw_output = subprocess.check_output(["iw", "phy", phyname, "info"],
+                                                 text=True, stderr=subprocess.DEVNULL)
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            log(f"[host] preflight: could not run `iw phy {phyname} info` ({e}); "
+                f"skipping the AP-mode check")
+            return True                     # can't check -> let the real bring-up decide
+    modes, soft = _parse_iw_modes(_iw_output)
+    driver = "?"
+    try:
+        import os
+        driver = os.path.basename(os.path.realpath(f"/sys/class/ieee80211/{phyname}/device/driver"))
+    except OSError:
+        pass
+    if "AP" in modes:
+        if "monitor" not in modes and "monitor" not in soft:
+            log(f"[host] preflight: {phyname} ({driver}) has AP but no monitor mode - "
+                f"advertisement TX may fail (LDN needs an AP + monitor vif pair)")
+        log(f"[host] preflight OK: {phyname} ({driver}) supports AP mode "
+            f"(modes: {', '.join(modes)})")
+        return True
+    raise RuntimeError(
+        f"{phyname} ({driver}) cannot host: driver registers only "
+        f"[{', '.join(modes) or 'nothing'}] - no AP mode. This is a driver capability, not a "
+        f"setting. Use an AP-capable adapter (mt76 family: AWUS036ACM/mt7612u, AWUS036ACHM/mt7610u) "
+        f"and verify with `iw phy <phy> info` -> '* AP' under Supported interface modes.")
+
+
+# ---------------------------------------------------------------------------
+class HostTransport:
+    """HOST an LDN network (the Mystery Gift distributor role) with kinnay's `ldn` library, the
+    inverse of LiveTransport: we call `ldn.create_network` and become participant 0 (the AP); the
+    console SCANS for and JOINS us. Broadcasts our RFU search beacon (frlgsim.beacon) as the LDN
+    advertisement `application_data`, and moves UDP :12345 datagrams over the `ldn-tap` data iface
+    exactly as LiveTransport does over its station iface. Requires root + `ldn`/`trio`/`netlink` and
+    the real Switch; it cannot run offline.
+
+    Two hardware unknowns this class exists to surface EARLY (before any MG transport is built):
+      HW-0  can this Wi-Fi card AP-host (create an AP + monitor vif on one radio without erroring)?
+      HW-A  does the console list us on Mystery Gift -> Receive -> Friend (needs a valid beacon)?
+    `start()` returning without error answers HW-0; a JoinEvent in the log answers a step past HW-A."""
+
+    # FRLG LDN identity (must match what the console/emulator uses - same as LiveTransport).
+    LOCAL_COMMUNICATION_ID = 0x0100610011000000
+    SCENE_ID = 0
+    APPLICATION_VERSION = 1
+
+    def __init__(self, app_data=b"", password=None, nickname="EMU", keys_path="~/.switch/prod.keys",
+                 local_comm_id=None, scene_id=None, app_version=None, max_participants=2,
+                 phyname="phy0", ifname="ldn-tap", ap_ifname="ldn", mon_ifname="ldn-mon",
+                 channel=None, tracer=None, log=print):
+        self.info = getattr(log, "info", log)
+        self.tracer = tracer                # optional ldntrace.Tracer: byte/action trace of hosting
+        self.app_data = bytes(app_data or b"")
+        self.password = password if password else GBA_APP_PASSPHRASE
+        self.nickname = nickname
+        self.keys_path = keys_path
+        self.max_participants = max_participants
+        self.phyname = phyname
+        self.ifname = ifname                # data (tap) iface - where our UDP sockets live
+        self.ap_ifname = ap_ifname          # the AP vif
+        self.mon_ifname = mon_ifname        # the monitor vif (scan/advertise)
+        self.channel = channel
+        if local_comm_id is not None:
+            self.LOCAL_COMMUNICATION_ID = local_comm_id
+        if scene_id is not None:
+            self.SCENE_ID = scene_id
+        if app_version is not None:
+            self.APPLICATION_VERSION = app_version
+        self.log = log
+        self.ssid = None
+        self.our_ip = None
+        self.host_ip = None                 # alias of our_ip (we ARE the host) for engine symmetry
+        self.our_mac = None                 # our AP MAC = our Pia connection GUID
+        self.broadcast = None
+        self.iface = None
+        self.participants = []              # [(index, ip, mac, name)] as children join
+        self._network = None
+        self._tx = None
+        self._rx = None
+        self._rx_seen = 0
+        self._thread = None
+        self._ready = threading.Event()
+        self._stop = threading.Event()
+        self._err = None
+
+    def start(self, timeout=30, attempts=3, settle=1.5, preflight=True):
+        """Bring up the AP, retrying transient nl80211 flakes like LiveTransport. Returns self once
+        hosting (HW-0 passed). Raises RuntimeError with the fully-unwrapped cause if the card cannot
+        host (e.g. AP+monitor interface combination unsupported - the fatal HW-0 answer).
+        `preflight=False` skips the iw-phy AP-mode check (escape hatch if `iw` output misleads)."""
+        if preflight:
+            preflight_host(self.phyname, self.log)      # one clear verdict, not 3x ENOTSUP walls
+        last_err = None
+        for attempt in range(1, attempts + 1):
+            free_radio({self.phyname}, self.log)        # clear the radio (frees ldn/ldn-mon/ldn-tap)
+            self._err = None
+            self._ready.clear()
+            self._stop.clear()
+            self._thread = threading.Thread(target=self._run_host, daemon=True)
+            self._thread.start()
+            if not self._ready.wait(timeout):
+                last_err = f"LDN host bring-up timed out after {timeout}s (attempt {attempt}/{attempts})"
+                self.log(f"[host] {last_err}")
+                self._stop.set()
+            elif self._err:
+                last_err = self._err
+            else:
+                self._assert_vifs()                     # prove the AP+monitor+tap trio exists
+                tune_iface(self.iface, self.our_ip, self.broadcast, self.log)
+                self._setup_sockets()
+                if attempt > 1:
+                    self.log(f"[host] AP up on attempt {attempt}/{attempts}.")
+                return self
+            self._stop.set()
+            if self._thread is not None:
+                self._thread.join(timeout=2)
+            if attempt < attempts:
+                self.log(f"[host] retrying AP bring-up in {settle}s (attempt {attempt + 1}/{attempts})...")
+                time.sleep(settle)
+        light_cleanup(self.log)
+        raise RuntimeError(f"LDN host bring-up failed after {attempts} attempt(s):\n{last_err}")
+
+    def _run_host(self):
+        try:
+            import trio
+            import ldn
+        except ImportError as e:                        # pragma: no cover
+            self._err = f"missing dep for host mode: {e}"
+            self._ready.set()
+            return
+
+        async def main():
+            keys = ldn.load_keys(self.keys_path)
+            param = ldn.CreateNetworkParam()
+            param.keys = keys
+            param.local_communication_id = self.LOCAL_COMMUNICATION_ID
+            param.scene_id = self.SCENE_ID
+            param.app_version = self.APPLICATION_VERSION
+            param.max_participants = self.max_participants
+            param.accept_policy = ldn.ACCEPT_ALL
+            param.application_data = self.app_data       # our RFU search beacon (frlgsim.beacon)
+            param.password = self.password               # 64-byte emulator passphrase (same as join)
+            param.name = self.nickname.encode()
+            param.phyname = self.phyname
+            param.phyname_monitor = self.phyname         # AP + monitor share the one radio
+            param.ifname = self.ap_ifname
+            param.ifname_monitor = self.mon_ifname
+            param.ifname_tap = self.ifname
+            if self.channel is not None:
+                param.channel = self.channel
+            self.info("Creating the LDN network (hosting)...")
+            async with ldn.create_network(param) as network:
+                self._network = network
+                if self.tracer is not None:             # byte/action trace of the hosting path
+                    from . import ldntrace
+                    ldntrace.attach(network, self.tracer, self.log)
+                info = network.info()
+                self.ssid = info.ssid
+                me = network.participant()               # participant 0 = us (the AP)
+                self.our_ip = me.ip_address
+                self.host_ip = me.ip_address
+                self.our_mac = bytes(me.mac_address)
+                self.broadcast = network.broadcast_address()
+                self.iface = self.ifname
+                self.log(f"[host] AP up: ssid={self.ssid.hex()} ch={info.channel} "
+                         f"us={self.our_ip}/{self.our_mac.hex()} bcast={self.broadcast} "
+                         f"comm_id=0x{self.LOCAL_COMMUNICATION_ID:016x} beacon={len(self.app_data)}B")
+                self.info(f"Hosting. Waiting for the console to join "
+                          f"(ssid={self.ssid.hex()[:8]}..., channel {info.channel}).")
+                self._ready.set()
+                # Keepalive + event pump: log joins/leaves (the HW-A/HW-B signal) until asked to stop.
+                while not self._stop.is_set():
+                    with trio.move_on_after(0.2):
+                        event = await network.next_event()
+                        self._on_event(event, network)
+
+        try:
+            trio.run(main)
+        except BaseException as e:                        # pragma: no cover
+            self._err = _format_join_error(e)
+            self.log(f"[host] LDN host bring-up FAILED:\n{self._err}")
+            self._ready.set()
+
+    def _on_event(self, event, network):
+        name = type(event).__name__
+        if name == "JoinEvent":
+            p = event.participant
+            self.participants.append((event.index, p.ip_address, bytes(p.mac_address), bytes(p.name)))
+            self.log(f"[host] *** CONSOLE JOINED *** idx={event.index} ip={p.ip_address} "
+                     f"mac={bytes(p.mac_address).hex()} name={bytes(p.name)!r}")
+            self.info("A console joined the network.")
+        elif name == "LeaveEvent":
+            self.log(f"[host] console left: idx={event.index}")
+        else:
+            self.log(f"[host] event: {name} {event!r}")
+
+    def _assert_vifs(self):
+        """Verify the LDN-README hosting design is actually in place after bring-up: three vifs -
+        the AP (`ldn`, handles mgmt/auth frames), the monitor (`ldn-mon`, sends advertisements +
+        moves data frames incl. broadcast), and the tap (`ldn-tap`, the kernel data plane our UDP
+        sockets ride). Log each vif's type; warn loudly on anything missing (a missing monitor =
+        the console will never see an advertisement even though 'AP up' printed)."""
+        missing = []
+        for name, want in ((self.ap_ifname, "AP"), (self.mon_ifname, "monitor"), (self.ifname, "tap")):
+            if not _iface_exists(name):
+                missing.append(f"{name} ({want})")
+                continue
+            typ = "tap"
+            try:
+                out = subprocess.check_output(["iw", "dev", name, "info"],
+                                              text=True, stderr=subprocess.DEVNULL)
+                for line in out.splitlines():
+                    if line.strip().startswith("type "):
+                        typ = line.strip().split()[1]
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                pass                                    # tap is not an nl80211 dev - `iw` fails, fine
+            self.log(f"[host] vif check: {name} present (type {typ}, want {want})")
+        if missing:
+            self.log(f"[host] vif check WARNING - missing: {', '.join(missing)}; "
+                     f"hosting will not work correctly")
+
+    def set_application_data(self, data):
+        """Update the live beacon (e.g. to flip startedActivity once a child connects)."""
+        self.app_data = bytes(data)
+        if self._network is not None:
+            try:
+                self._network.set_application_data(self.app_data)
+            except Exception as e:                        # pragma: no cover
+                self.log(f"[host] set_application_data failed: {e}")
+
+    def _setup_sockets(self):
+        tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        tx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        tx.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        tx.bind(("0.0.0.0", PIA_PORT))
+        self._tx = tx
+        rx = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_IP))
+        rx.bind((self.iface, 0))
+        rx.setblocking(False)
+        try:
+            rx.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)
+        except OSError as e:                              # pragma: no cover
+            self.log(f"[host] could not enlarge rx SO_RCVBUF: {e}")
+        self._rx = rx
+
+    def send(self, datagram, dst_ip):
+        dst = self.broadcast if dst_ip in (self.broadcast, "255.255.255.255") else dst_ip
+        if self.tracer is not None:
+            self.tracer.write("udp_out", dst=dst, hex=bytes(datagram).hex())
+        try:
+            self._tx.sendto(datagram, (dst, PIA_PORT))
+        except OSError as e:                              # pragma: no cover
+            self.log(f"[host] sendto failed: {e}")
+
+    def recv(self):
+        out = []
+        if self._rx is None:
+            return out
+        while True:
+            try:
+                data = self._rx.recv(65535)
+            except (BlockingIOError, OSError):
+                break
+            parsed = LiveTransport._parse_udp(data)
+            if parsed is None:
+                continue
+            src_ip, src_port, dst_ip, dst_port, payload = parsed
+            if src_ip == self.our_ip or dst_port != PIA_PORT:
+                continue
+            self._rx_seen += 1
+            if self._rx_seen <= 10:
+                self.log(f"[host] RX #{self._rx_seen}: {src_ip} -> {dst_ip}:{dst_port} "
+                         f"len={len(payload)} {payload[:4].hex()}")
+            if self.tracer is not None:
+                self.tracer.write("udp_in", src=src_ip, dst=dst_ip, hex=payload.hex())
+            out.append((payload, src_ip))
+        return out
+
+    def stop(self):
+        self._stop.set()
+        for s in (self._tx, self._rx):
+            try:
+                if s:
+                    s.close()
+            except OSError:
+                pass
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+        light_cleanup(self.log)
