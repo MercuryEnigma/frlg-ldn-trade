@@ -254,6 +254,37 @@ def test_beacon_has_card_and_activity_bits_present():
     assert (gd >> 8) & 0x7F == beacon.ACTIVITY_WONDER_CARD  # activity in the compat high byte (first cut)
 
 
+def test_trade_beacon_activity_has_no_wonder_card_bit():
+    gd = beacon.game_data_word(activity=beacon.ACTIVITY_TRADE, has_card=False)
+    assert (gd >> 8) & 0x7F == beacon.ACTIVITY_TRADE
+    assert not gd & beacon.HASCARD_BIT
+
+
+def test_pia_header_matches_wiki_layout_and_round_trips():
+    """Pia 6.16-6.41 header (sysCommVer 21-22, big-endian) per the NintendoClients wiki: size 0x5C at
+    0x00, sysCommVer at 0x02, big-endian fields, name at 0x1C; decode is the inverse of build."""
+    h = beacon.build_pia_header(sys_comm_ver=21, app_comm_ver=1, nickname="Chase",
+                                name_encoding=beacon.PIA_NAME_UTF8)
+    assert len(h) == beacon.PIA_HDR == 0x5C
+    assert int.from_bytes(h[0x00:0x02], "big") == 0x5C     # big-endian size
+    assert h[0x02] == 21                                    # sys comm version
+    assert int.from_bytes(h[0x03:0x05], "big") == 1        # app comm version (big-endian)
+    assert h[0x15] == 1 and h[0x16] == 1                    # player limit enabled, num players
+    assert h[0x1B] == beacon.PIA_NAME_UTF8
+    d = beacon.decode_pia_header(h)
+    assert d["size"] == 0x5C and d["sys_comm_ver"] == 21 and d["app_comm_ver"] == 1
+    assert d["nickname"] == "Chase" and d["name_size"] == 5
+
+
+def test_build_beacon_uses_real_pia_header_by_default():
+    """build_beacon now emits a well-formed Pia header (not zeros); the record still round-trips."""
+    app = beacon.build_beacon(trainer_id=0x2288, name="EMU", nickname="Chase")
+    assert app[:0x5C] != b"\x00" * 0x5C                     # no longer zero-filled
+    assert beacon.decode_pia_header(app[:0x5C])["sys_comm_ver"] == beacon.PIA_SYS_COMM_VERSION
+    rec = transport._b85_decode(app[beacon.PIA_HDR:])[:beacon.RECORD_SIZE]
+    assert transport._frlg_name(rec[2:10]) == "EMU"
+
+
 def test_mutate_beacon_preserves_header_changes_record():
     """mutate_beacon keeps a captured Pia header verbatim and only rewrites overridden RFU fields."""
     captured = bytes(range(beacon.PIA_HDR)) + beacon.b85_encode(

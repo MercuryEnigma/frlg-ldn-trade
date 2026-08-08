@@ -376,7 +376,7 @@ class LiveTransport:
                 # joinable filter but then rejects our auth, surfacing as an opaque trio timeout - logging
                 # it makes "this Switch isn't accepting this MAC" diagnosable.
                 self.log(f"[live] saw network comm_id=0x{n.local_communication_id:016x} "
-                         f"scene={n.scene_id} app_version={n.app_version} s{n.num_participants}/{n.max_participants} "
+                         f"scene={n.scene_id} {n.num_participants}/{n.max_participants} "
                          f"accept_policy={getattr(n, 'accept_policy', '?')}")
             # Prefer an exact FRLG comm-id match; else fall back to the only joinable network.
             net = next((n for n in joinable
@@ -759,7 +759,6 @@ class HostTransport:
         async def main():
             keys = ldn.load_keys(self.keys_path)
             param = ldn.CreateNetworkParam()
-            param.protocol = 3
             param.keys = keys
             param.local_communication_id = self.LOCAL_COMMUNICATION_ID
             param.scene_id = self.SCENE_ID

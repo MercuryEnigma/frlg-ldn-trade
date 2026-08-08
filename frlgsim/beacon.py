@@ -30,10 +30,71 @@ RECORD_SIZE = 24                    # the base85-encoded RFU search record
 
 # --- friend / Mystery-Gift beacon field defaults (link_rfu.h RfuGameData) --------------------------
 RFU_SERIAL_GAME = 0x0002            # the serial the friend path relies on (the emulator synthesizes it)
+ACTIVITY_TRADE = 4                  # gRfuGameData.activity for Direct Corner trading [union_room.h]
 ACTIVITY_WONDER_CARD = 21          # gRfuGameData.activity for the Mystery Gift card list [union_room]
 LANGUAGE_ENGLISH = 2               # compatibility.language
 VERSION_FIRE_RED = 4               # gGameVersion FireRed (5 = LeafGreen)
 HASCARD_BIT = 0x20                 # gname[0] |= 0x20 marks "has a Wonder Card to give" [plan/union_room]
+
+
+# --- Pia 6.16-6.41 system header (sysCommVer 21-22), BIG-ENDIAN -----------------------------------
+# [NintendoClients wiki: LDN-Application-Data-(Pia); see LDN/wiki/]. This 0x5C-byte header precedes
+# the game's app data (our base85 RFU record). Previously we zero-filled it, which the console's Pia
+# layer rejects. Values below are CONFIRMED from a real FRLG beacon capture (2026-08-07): sysCommVer
+# 22, appCommVer 88 (0x58), user password all-zero, name encoding UTF-8, name = the Switch nickname.
+PIA_SYS_COMM_VERSION = 22          # Pia 6.39-6.41 (from capture; wiki: 21=6.16-6.30, 22=6.39-6.41)
+PIA_APP_COMM_VERSION = 88          # 0x58 - FRLG application communication version (from capture)
+PIA_NAME_UTF8, PIA_NAME_UTF16 = 1, 2
+
+
+def _encode_pia_name(nickname, encoding):
+    if encoding == PIA_NAME_UTF16:
+        return (nickname or "").encode("utf-16-be")     # Pia 6.x header is big-endian (name endianness TBC)
+    return (nickname or "").encode("utf-8")
+
+
+def build_pia_header(*, sys_comm_ver=PIA_SYS_COMM_VERSION, app_comm_ver=PIA_APP_COMM_VERSION,
+                     user_password=b"", player_limit_enabled=True, num_players=1, nickname="EMU",
+                     name_encoding=PIA_NAME_UTF8):
+    """Build the 92-byte Pia system header (big-endian) per the NintendoClients wiki. Everything after
+    it (offset 0x5C) is the game's application data. Defaults are sensible; `app_comm_ver`, the
+    `user_password`, `sys_comm_ver`, and `name_encoding` are the values worth confirming live."""
+    name = _encode_pia_name(nickname, name_encoding)[:64]
+    h = bytearray(PIA_HDR)
+    h[0x00:0x02] = PIA_HDR.to_bytes(2, "big")                       # system property data size (0x5C)
+    h[0x02] = sys_comm_ver & 0xFF                                   # system communication version
+    h[0x03:0x05] = (app_comm_ver & 0xFFFF).to_bytes(2, "big")       # application communication version
+    h[0x05:0x15] = bytes(user_password)[:16].ljust(16, b"\x00")     # user password (16)
+    h[0x15] = 1 if player_limit_enabled else 0                      # is player limit enabled
+    h[0x16] = num_players & 0xFF                                    # number of players
+    h[0x17:0x1B] = len(name).to_bytes(4, "big")                     # player name size
+    h[0x1B] = name_encoding & 0xFF                                  # player name encoding (1 UTF-8 / 2 UTF-16)
+    h[0x1C:0x1C + len(name)] = name                                 # player name (64, null-padded)
+    return bytes(h)
+
+
+def decode_pia_header(header):
+    """Decode a captured 0x5C Pia header into its fields (big-endian) for cross-referencing a real
+    beacon against the wiki spec."""
+    h = bytes(header)[:PIA_HDR].ljust(PIA_HDR, b"\x00")
+    name_size = int.from_bytes(h[0x17:0x1B], "big")
+    enc = h[0x1B]
+    raw_name = h[0x1C:0x1C + min(name_size, 64)]
+    try:
+        name = raw_name.decode("utf-16-be" if enc == PIA_NAME_UTF16 else "utf-8", "replace")
+    except Exception:
+        name = raw_name.hex()
+    return {
+        "size": int.from_bytes(h[0x00:0x02], "big"),
+        "sys_comm_ver": h[0x02],
+        "app_comm_ver": int.from_bytes(h[0x03:0x05], "big"),
+        "user_password": h[0x05:0x15].hex(),
+        "player_limit_enabled": h[0x15],
+        "num_players": h[0x16],
+        "name_size": name_size,
+        "name_encoding": enc,
+        "nickname": name,
+    }
 
 
 # --- custom base85 (inverse of transport._b85_decode) ----------------------------------------------
@@ -89,17 +150,23 @@ def build_record(*, trainer_id, name, rfu_session_id, partner_info=b"", **game_d
 
 
 def build_beacon(*, trainer_id=0x2288, name="EMU", rfu_session_id=0x0002, pia_header=None,
-                 partner_info=b"", **game_data_kwargs):
+                 partner_info=b"", nickname="EMU", sys_comm_ver=PIA_SYS_COMM_VERSION,
+                 app_comm_ver=PIA_APP_COMM_VERSION, user_password=b"", name_encoding=PIA_NAME_UTF8,
+                 **game_data_kwargs):
     """Build a full `application_data` beacon: <Pia 0x5C header> <base85(24-byte RFU record)>.
 
-    `pia_header` defaults to a zero-filled 0x5C block !! LIVE-TUNED !! - the console's Pia layer may
-    require a well-formed system header (sysCommVer 21/22 + Switch nickname). If the console will not
-    list a synthesized header, use mutate_beacon() with a captured real host header instead.
+    The Pia header is now built per the wiki spec (build_pia_header) instead of zero-filled. Pass
+    `pia_header` to override it with a captured real header verbatim (the surest option). `nickname`
+    and the sys/app-comm/password/encoding kwargs feed build_pia_header.
 
-    `rfu_session_id` default 0x0002 = RFU_SERIAL_GAME (the friend-path serial). Other kwargs
+    `rfu_session_id` default 0x0002 = RFU_SERIAL_GAME (the friend-path serial). Game-data kwargs
     (trade_species/activity/has_card/language/version) flow to game_data_word()."""
-    header = bytes(pia_header) if pia_header is not None else b"\x00" * PIA_HDR
-    header = header[:PIA_HDR].ljust(PIA_HDR, b"\x00")
+    if pia_header is not None:
+        header = bytes(pia_header)[:PIA_HDR].ljust(PIA_HDR, b"\x00")
+    else:
+        header = build_pia_header(sys_comm_ver=sys_comm_ver, app_comm_ver=app_comm_ver,
+                                  user_password=user_password, nickname=nickname,
+                                  name_encoding=name_encoding)
     record = build_record(trainer_id=trainer_id, name=name, rfu_session_id=rfu_session_id,
                           partner_info=partner_info, **game_data_kwargs)
     return header + b85_encode(record)

@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
-"""Mystery Gift HOST spike - the earliest hardware checkpoint for the distributor work.
+"""FRLG HOST spike - the earliest hardware checkpoint for Linux acting as the LDN host.
 
-This does NOT trade or give a gift. It only stands up an LDN network in the distributor/host role
-and waits, so we can answer two questions at the console BEFORE building the MG transport on top:
+This does NOT complete a trade or give a gift. It only stands up an LDN network in the host role
+and waits, so we can test either Direct Corner trade discovery or Mystery Gift friend discovery
+before building the game protocol on top:
 
   HW-0  Can this Wi-Fi card AP-host at all?  -> `start()` returns without error / prints "AP up".
         (If the card cannot do the AP + monitor interface combination on one radio, it fails here,
          and we learn the whole approach needs a different radio - the cheapest possible failure.)
 
-  HW-A  Does the console list us as a Mystery Gift friend?  -> on the console:
-        Mystery Gift -> Receive Gift -> Wireless/Friend; watch for our entry. If the beacon needs
-        tuning, iterate frlgsim/beacon.py (or pass --beacon-hex from a captured real host beacon).
+  HW-A  Does the console list/connect to us? Select the desired mode with --flow. If the beacon
+        needs tuning, iterate frlgsim/beacon.py (or pass --beacon-hex from a matching real host).
 
   (a step past HW-A) Does the console CONNECT?  -> a "*** CONSOLE JOINED ***" line appears.
 
 Setup is the same as a live trade: run as root with the LDN radio free (NetworkManager not managing
 the LDN vifs - see the project notes), and pick the Wi-Fi phy with --phy.
 
-    sudo ./.venv/bin/python host_spike.py --phy phy0 --ot EMU
-    sudo ./.venv/bin/python host_spike.py --beacon-hex <captured-host-application_data-hex>
+    sudo ./.venv/bin/python host_spike.py --flow trade --phy phy0 --ot EMU
+    sudo ./.venv/bin/python host_spike.py --flow trade --beacon-hex <captured-trade-host-hex>
+    sudo ./.venv/bin/python host_spike.py --flow mystery-gift --phy phy0 --ot EMU
 
 Ctrl-C to stop (tears down the LDN vifs).
 """
@@ -29,9 +30,15 @@ import sys
 import time
 
 from frlgsim import beacon
-from frlgsim.transport import HostTransport
+from frlgsim.transport import HostTransport, find_ap_phy, list_phys
 
 VERSIONS = {"firered": beacon.VERSION_FIRE_RED, "leafgreen": 5}
+
+# Captured verbatim from a real FireRed Direct Corner host. The Switch-side glue's RFU record
+# layout is not fully understood, so this is better ground truth for trade discovery than rewriting
+# fields using the experimental Mystery Gift encoder.
+CAPTURED_TRADE_BEACON = bytes.fromhex(
+    "005c160058000000000000000000000000000000000101000000050143686173650000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000686c5a68656c76623476354358455a232323232368642323232323232323")
 
 
 def _resolve_keys(path):
@@ -58,16 +65,24 @@ def _resolve_keys(path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--phy", default="phy0", help="wifi phy to host on (default phy0)")
+    ap.add_argument("--phy", default="auto", help="wifi phy to host on; 'auto' (default) picks the "
+                    "first AP-capable phy (the adapter renumbers on reload/replug, e.g. phy3)")
     ap.add_argument("--keys", default="~/.switch/prod.keys", help="Switch prod.keys path")
     ap.add_argument("--ot", default="EMU", help="host in-game name shown in the beacon")
     ap.add_argument("--tid", default="0x2288", help="host trainer id (hex), beacon field")
     ap.add_argument("--version", choices=list(VERSIONS), default="firered")
+    ap.add_argument("--flow", choices=("trade", "mystery-gift"), default="mystery-gift",
+                    help="console flow to advertise (default: mystery-gift)")
     ap.add_argument("--channel", type=int, default=None, help="fix the Wi-Fi channel (default: auto)")
-    ap.add_argument("--max-participants", type=int, default=2)
+    ap.add_argument("--comm-id", default="", help="LDN local_communication_id (hex); default = the "
+                    "captured FRLG-NSO id 0x01006fa0233f8000")
+    ap.add_argument("--scene", type=int, default=None, help="LDN scene id; default = 22287 (the "
+                    "captured trade scene; the MG-friend scene may differ)")
+    ap.add_argument("--max-participants", type=int, default=None,
+                    help="LDN participant limit (default: 6 for trade, 2 for mystery-gift)")
     ap.add_argument("--password", default="", help="LDN passphrase hex; default = emulator passphrase")
     ap.add_argument("--beacon-hex", default="", help="use this raw application_data verbatim "
-                    "(e.g. a captured real host beacon) instead of the synthesized first-cut beacon")
+                    "instead of synthesizing one; the capture must match --flow")
     ap.add_argument("--no-beacon", action="store_true", help="host with an EMPTY beacon (HW-0 only: "
                     "just prove the card can AP-host; the console will not list us)")
     ap.add_argument("--debug", action="store_true", help="enable the ldn library's own DEBUG logging "
@@ -90,17 +105,33 @@ def main():
     if os.geteuid() != 0:
         ap.error("must run as root (LDN needs the raw radio); re-run with sudo")
 
+    if args.phy == "auto":
+        phy = find_ap_phy(log=print)
+        if phy is None:
+            print("[spike] no AP-capable phy found (need a driver that lists '* AP' in "
+                  f"`iw phy <phy> info`). Present phys: {', '.join(list_phys()) or 'none'}")
+            return 1
+        args.phy = phy
+
     if args.beacon_hex:
         app_data = bytes.fromhex(args.beacon_hex.replace(" ", ""))
         src = "captured/--beacon-hex"
     elif args.no_beacon:
         app_data = b""
         src = "EMPTY (HW-0 only)"
+    elif args.flow == "trade":
+        app_data = CAPTURED_TRADE_BEACON
+        src = "captured known-good trade host"
     else:
         app_data = beacon.build_beacon(
             trainer_id=int(args.tid, 16), name=args.ot, rfu_session_id=beacon.RFU_SERIAL_GAME,
-            activity=beacon.ACTIVITY_WONDER_CARD, has_card=True, version=VERSIONS[args.version])
-        src = "synthesized first-cut (frlgsim.beacon)"
+            activity=beacon.ACTIVITY_WONDER_CARD, has_card=True,
+            version=VERSIONS[args.version], nickname=args.ot)
+        src = "synthesized first-cut mystery-gift (frlgsim.beacon)"
+
+    max_participants = args.max_participants
+    if max_participants is None:
+        max_participants = 6 if args.flow == "trade" else 2
 
     password = bytes.fromhex(args.password) if args.password else None
     keys_path = _resolve_keys(args.keys)
@@ -110,6 +141,8 @@ def main():
               "(under sudo, ~ is /root).")
         return 2
     print(f"[spike] keys: {keys_path}")
+    print(f"[spike] flow: {args.flow}")
+    print(f"[spike] max participants: {max_participants}")
     print(f"[spike] beacon: {src} ({len(app_data)} B){': ' + app_data.hex() if app_data else ''}")
 
     tracer = None
@@ -119,8 +152,9 @@ def main():
         print(f"[spike] tracing hosting bytes/actions -> {args.trace}")
 
     t = HostTransport(app_data=app_data, password=password, nickname=args.ot, keys_path=keys_path,
-                      max_participants=args.max_participants, phyname=args.phy, channel=args.channel,
-                      tracer=tracer, log=print)
+                      max_participants=max_participants, phyname=args.phy, channel=args.channel,
+                      local_comm_id=int(args.comm_id, 16) if args.comm_id else None,
+                      scene_id=args.scene, tracer=tracer, log=print)
     try:
         t.start(preflight=not args.skip_preflight)
     except Exception as e:
@@ -153,7 +187,12 @@ def main():
         return 1
 
     print("\n[spike] HW-0 PASSED: the card is hosting an LDN network.")
-    print("[spike] Now on the console: Mystery Gift -> Receive Gift -> Wireless/Friend, and watch")
+    if args.flow == "trade":
+        print("[spike] Now on the console: Direct Corner -> Join Group (Linux is the Leader/host), "
+              "select our entry, and watch")
+    else:
+        print("[spike] Now on the console: Mystery Gift -> Wonder Cards -> Friend (NOT Wireless "
+              "Communication = the 0x7F7D distributor path we can't do), and watch")
     print("        this terminal. A '*** CONSOLE JOINED ***' line means we got past HW-A. Ctrl-C to stop.")
     try:
         while True:

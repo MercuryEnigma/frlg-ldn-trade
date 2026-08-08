@@ -70,7 +70,9 @@ Required for everything touching the closed LDN glue and the real Pia stack: bea
 synthesis, activity visibility), the Pia host handshake, `ldn.create_network` hosting — and therefore
 the full M1 bring-up and the full end-to-end gift. Debugged live with `--verbose --capture`,
 iterating ("mirror by symmetry, tune live"). Setup as for trades: root, NetworkManager stopped,
-`--phy` selected. Console flow: **Mystery Gift → Receive Gift → Friend → [A] on our entry**.
+`--phy` selected. Console flow: **Mystery Gift → Wonder Cards → Friend → [A] on our entry** (the
+"Friend" option = the serial-0x0002 friend path; "Wireless Communication" = the 0x7F7D distributor
+path, which is not injectable).
 
 ---
 
@@ -141,14 +143,14 @@ no `CB2_LinkError`.
 2. `sudo host_spike.py --debug --trace host.jsonl` → "AP up" + 3-vif check clean.
 3. `sudo sniff.py --channel <same>` on the MT7601U sees our advertisements (~10/s). Silence =
    monitor-TX/injection problem despite "AP up".
-4. Console → Mystery Gift → Receive Gift: listed? If not → beacon content (capture a real host's
+4. Console → Mystery Gift → Wonder Cards → Friend: listed? If not → beacon content (capture a real host's
    `application_data` via the join path's `_dump_beacon`, then `beacon.mutate_beacon` /
    `--beacon-hex`; `sniff.py --mgmt` shows whether the console is even probing).
 5. A-press → trace shows `auth_req`/`auth_resp` → `*** CONSOLE JOINED ***`.
 6. Post-join `udp_in` records in the trace = the console's first Pia datagrams — the ground truth
    for building the Pia host FSM.
-- **HW-A (does the console list us?):** with the AP up, on the console go Mystery Gift → Receive Gift →
-  Wireless/Friend and watch for our entry. The synthesized beacon is a first cut; iterate `beacon.py`
+- **HW-A (does the console list us?):** with the AP up, on the console go Mystery Gift → Wonder Cards →
+  **Friend** (not Wireless Communication) and watch for our entry. The synthesized beacon is a first cut; iterate `beacon.py`
   (or pass `--beacon-hex` from a captured real host beacon, then `beacon.mutate_beacon`) until listed.
 - A `*** CONSOLE JOINED ***` line in the log = we got a step past HW-A (the LDN association).
 
