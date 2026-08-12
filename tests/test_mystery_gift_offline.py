@@ -14,7 +14,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from frlgsim import gbaframe, rfu, linkplayer, wonder_card, ni, beacon, transport
+from frlgsim import block, charmap, gbaframe, rfu, linkplayer, wonder_card, ni, beacon, transport
 from frlgsim import mystery_gift as mg
 
 
@@ -140,6 +140,55 @@ def test_link_player_block_has_both_magics():
     assert len(blk) == 60
     parsed, ok = linkplayer.parse_block(blk)
     assert ok and parsed.name == "EMU" and parsed.version == linkplayer.VERSION_FIRE_RED
+
+
+def test_trade_animation_partner_name_is_terminated_and_identity_aligned():
+    """The trade animation's ``{STR_VAR_1}`` is copied directly from
+    ``gLinkPlayers[GetMultiplayerId() ^ 1].name`` (trade_scene.c).  Lock the
+    exact LinkPlayer name/language offsets and the matching trainer-card name
+    so a layout or character-map regression cannot turn the destination name
+    in ``"{MON} will be sent to {TRAINER}"`` into unterminated text.
+    """
+    lp = linkplayer.LinkPlayer(
+        name="EMU", trainer_id=0x47ED8822,
+        version=linkplayer.VERSION_LEAF_GREEN,
+        player_id=0, language=linkplayer.LANGUAGE_ENGLISH,
+    )
+    packed = lp.pack()
+    assert packed[8:16] == bytes.fromhex("bfc7cfff00000000")
+    assert packed[26:28] == b"\x02\x00"
+    assert packed[8:16].index(charmap.EOS) == 3
+
+    card = linkplayer.build_trainer_card(lp)
+    assert card[linkplayer.TC_OFF_PLAYER_NAME:
+                linkplayer.TC_OFF_PLAYER_NAME + 8] == packed[8:16]
+
+
+def test_200_byte_link_player_transfer_cannot_overwrite_name_with_tail_fragment():
+    """The RFU NONE request transfers a 60-byte LinkPlayerBlock in a fixed
+    200-byte buffer (17 twelve-byte fragments).  Model the Switch receiver's
+    offset calculation, including repeated INIT and fragment 16, and prove the
+    140-byte tail cannot overlap the display-name field in fragment 2.
+    """
+    lp = linkplayer.LinkPlayer(name="EMU", player_id=0)
+    sent = linkplayer.build_block(lp).ljust(200, b"\x00")
+    sender = block.BlockSender(sent, owner=0, trust_pia=True)
+    recv = block.RecvBlock()
+
+    # The live 8.3 trace carried four INIT polls before fragments 0..16.
+    for _ in range(4):
+        recv.on_init(sender.count, 0x80)
+    while not sender.done:
+        cmd = rfu.parse_slot(rfu.serialize(sender.tick(None)))
+        if cmd["op"] == rfu.SEND_BLOCK:
+            recv.on_block(cmd["index"], cmd["frag"])
+
+    assert recv.done
+    assert recv.data()[:200] == sent
+    # gBlockRecvBuffer offset 16*12=192: the final fragment is only padding.
+    assert recv.data()[192:204] == b"\x00" * 12
+    parsed, ok = linkplayer.parse_block(recv.data())
+    assert ok and parsed.name == "EMU"
 
 
 # --- Parent NI handshake (sender = join status; receiver = ack + reassemble child game data) --

@@ -26,7 +26,7 @@ import trio
 
 import ldn
 from frlgsim.transport import find_ap_phy, list_phys
-from host_spike import _resolve_keys
+from frlgsim.host_support import resolve_keys
 
 STALE_VIFS = ["ldn", "ldn-mon", "ldn-tap"]
 
@@ -56,7 +56,7 @@ def main():
     if phy is None:
         print(f"[scan] no AP-capable phy found. Present phys: {', '.join(list_phys()) or 'none'}")
         return 1
-    keys_path = _resolve_keys(args.keys)
+    keys_path = resolve_keys(args.keys)
     if not os.path.exists(keys_path):
         print(f"[scan] prod.keys not found at {keys_path!r}"); return 2
     channels = [int(c) for c in args.channels.split(",") if c.strip()]

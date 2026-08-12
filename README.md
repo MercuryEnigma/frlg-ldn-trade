@@ -42,17 +42,29 @@ This demo was recorded using the **ALFA AWUS036ACHM**. The RZ616 is half as fast
 | Atheros AR9271 | External       | ath9k_htc | Unable to be assigned ip (most of the time) |
 
 ## Usage
-```sudo -E ./venv/bin/python frlgtrade.py --live -o output.pk3 PARTY1.pk3 PARTY2.pk3```
+
+Start a Direct Corner host with:
+
+```bash
+sudo -E ./.venv/bin/python frlgtrade_host.py --live -o output.pk3 PARTY1.pk3 PARTY2.pk3
+```
+
+Linux advertises the group and acts as the trade leader. With the default settings it offers the
+second supplied party member (`PARTY2.pk3`) and writes the Pokémon received from the Switch to
+`output.pk3`. Run `frlgtrade_host.py --help` for the complete operational CLI.
 
 **Optional Flags (not comprehensive):**
 
 | Flag         | Options          | Purpose        |
 |--------------|------------------|----------------|
-| --verbose    | N/A              | Verbose output  |
-| --phy        | phy# (e.g. phy1)  | WiFi phy selection |
-| --keys       | /path/to/prod.keys | non-default prod.keys location |
+| `--verbose` | N/A | Verbose protocol output |
+| `--phy` | phy name (for example `phy1`) | Wi-Fi PHY selection |
+| `--keys` | `/path/to/prod.keys` | Non-default prod.keys location |
+| `--slot` | zero-based party index | Host party member offered in the trade |
+| `--capture` | output path | Optional JSONL diagnostic capture |
 
-Above is the configuration I suggest using if you'd like a quick and easy demonstration of the program. You can use any of the listed optional flags, they're safe. Many of the undocumented ones are either unfinished, untested, internal tools, or artifacts of experiments that did not/have not yet panned out.
+The command above is the recommended demonstration configuration. The help output is the authoritative
+list of supported host options; trainer identity is deliberately not part of the CLI.
 
 **Setup**
 1. Create a Python venv and install all requirements in ``requirements.txt``
@@ -67,16 +79,28 @@ Above is the configuration I suggest using if you'd like a quick and easy demons
    then `sudo systemctl restart NetworkManager`. Name the file `zz-*` so it sorts last: some distros (e.g. Linux Mint's `ubuntu-system-adjustments.conf`) ship a later-sorting file that sets `unmanaged-devices=none` and silently overrides yours. Verify with `NetworkManager --print-config | grep unmanaged` — it must show the `interface-name:ldn...` list. (Stopping NetworkManager entirely also works, but the config file is a one-time setup that survives reboots.)
 3. Ensure you can become root. The script requires root to run.
 
+### Trainer identity
+
+Trainer identity is configured in Python rather than with CLI flags. Edit `DEFAULT_TRAINER` in
+[`frlgsim/host_profile.py`](frlgsim/host_profile.py) to change the name, TID, SID, gender, game
+version, language, National Dex status, or game-completion status. That profile is the single source
+for discovery, Pia Session, LinkPlayer, and trainer-card identity.
+
+See [the host design document](docs/frlgtrade_host_design.md) for the component boundaries, protocol
+flow, timing ownership, trainer propagation, and shutdown sequence.
+
 **Step-by-step Usage**
-1. Select trading at the direct corner and make your console the "Leader".
-2. Run the script. It may take multiple times to successfully connect.
-3. Approve the join request from "EMU".
-4. Walk to the LEFT CHAIR in the trading room. Walking may be laggy.
-5. Select the Pokémon you'd like to trade away.
-6. Accept the trade confirmation. You will be traded the *2nd* simulated party member.
-7. Once you return to the trade menu, cancel the trade.
-8. Walk out.
-9. You'll find PARTY2.pk3 in your party, and the Pokémon you traded will be in pwd as output.pk3 (or whatever you called it). 
+
+1. Run the host command and wait for `Hosting Direct Corner`.
+2. On the Switch, enter the Direct Corner and choose **Join Group**.
+3. Select the Linux trainer (`EMU` by default) and join. The Linux leader performs its room-entry
+   route automatically; wait until the host reports that trade selection is active.
+4. On the Switch, select the Pokémon to trade away and accept the confirmation. With the example
+   command, the Switch receives `PARTY2.pk3`.
+5. After the trade and save sequence returns to the trade menu, wait for the host prompt, then select
+   **CANCEL** and confirm **YES**.
+6. Allow the automated room exit and disconnect to finish. The received Pokémon is saved as
+   `output.pk3` (or the path passed to `--out`).
  
 ## Credits
 - [kinnay](https://github.com/kinnay) - For the [LDN library](https://github.com/kinnay/LDN) this is built upon, and the excellent [NintendoClients Wiki](https://github.com/kinnay/NintendoClients/wiki)

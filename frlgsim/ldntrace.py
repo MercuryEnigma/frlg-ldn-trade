@@ -132,16 +132,19 @@ def attach(network, tracer, log=print):
             log(f"[trace] dataframe-in hook error: {e}")
         return await orig_data_in(frame)
 
-    async def send_data_frame(data):
+    async def send_data_frame(data, target=None):
         try:
             n = tracer.counts.get("dataframe_out", 0)
             if n < DATAFRAME_HEX_LIMIT:
-                tracer.write("dataframe_out", hex=_hex(data))
+                fields = {"hex": _hex(data)}
+                if target is not None:
+                    fields["dst"] = str(target)
+                tracer.write("dataframe_out", **fields)
             else:
                 tracer.counts["dataframe_out"] = n + 1
         except Exception as e:                              # noqa: BLE001
             log(f"[trace] dataframe-out hook error: {e}")
-        return await orig_data_out(data)
+        return await orig_data_out(data, target)
 
     network._process_data_frame = process_data_frame
     network._send_data_frame = send_data_frame

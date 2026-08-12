@@ -6,6 +6,7 @@
 /*/
 !/frlgsim/
 !/tests/
+!/docs/
 
 # Never publish Pokemon data files (live-trade outputs can carry trainer/account
 # identifiers); covers any stray .pk3/.ek3 at the root or inside frlgsim/ too.
@@ -28,3 +29,11 @@ LDN/
 
 # Generated hosting-debug artifact (ldn_debug_report.sh output; system details)
 ldn-debug-report.txt
+
+# Runtime logs, protocol traces, and packet captures. These may contain console,
+# trainer, or network identifiers and should stay local.
+*.log
+*.jsonl
+*.pcap
+*.pcapng
+host-tap-*.txt

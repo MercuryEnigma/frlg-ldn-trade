@@ -8,7 +8,7 @@ rate, and a hexdump on first sight / change. Optionally archives ALL captured fr
 (radiotap linktype) for Wireshark.
 
 Two uses (debug runbook, MYSTERY_GIFT_DISTRIBUTOR.md):
-  1. While host_spike.py hosts on ANOTHER adapter: verify our advertisements are actually on air at
+  1. While frlgtrade_host.py hosts on ANOTHER adapter: verify our advertisements are actually on air at
      ~10/s. Silence here = monitor-TX/injection problem, even if the spike printed "AP up".
   2. Against a REAL console hosting (e.g. the trade Direct Corner, or another Switch sharing a
      Wonder Card): capture a genuine advertisement. (NOTE: the LDN advertisement body is encrypted -

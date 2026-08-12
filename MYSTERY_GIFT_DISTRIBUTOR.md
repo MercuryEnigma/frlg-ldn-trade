@@ -12,11 +12,9 @@ The working implementation plan also lives at `~/.claude/plans/next-let-s-plan-�
 
 ## 1. Goal & the defining constraint
 
-Today the program **joins** a console's session as the RFU **child / LDN joiner** and trades. A
-Mystery Gift distributor is the opposite role — the RFU **parent / LDN host**: the console *scans for
-and joins us*. Every layer of the current stack is written child-only (`assert self_id == 1`,
-decode-only beacon handling, a joiner-only Pia FSM, child-only frame builders), so the "simple
-script" is a small payload on top of a **new parent/host stack**.
+The project now has a production RFU **parent / LDN host** for Direct Corner trades: the console
+scans for and joins Linux. A Mystery Gift distributor reuses those host-side LDN, Pia, Reliable, and
+RFU foundations, but still needs the activity-21 discovery identity and Mystery Gift server protocol.
 
 ### Confirmed decisions
 - **Delivery mechanism:** Wonder Card + RAM script → deliveryman (not an immediate mystery-event grant).
@@ -90,16 +88,16 @@ Tier: **1** offline · **2a/2b** mGBA · **3** Switch.
 | Parent opcode payloads (`0x7700` SEND_PLAYER_IDS, `0xA100` SEND_BLOCK_REQ NONE, `LinkPlayerBlock`) | ✅ | `rfu.py`, `linkplayer.py` | **1** byte-assert vs `RfuPrepareSendBuffer`; **3** live |
 | Parent NI sender (join status `RFU_STATUS_JOIN_GROUP_OK (5)`) + receiver (ack the child's game-data NI) | ✅ | `ni.py` | **1** byte-exact — sender frames verified vs the child's recv-ack capture (`8006/0007/800a/000e`); receiver reassembles the 26-byte game data; **3** real handshake |
 | Beacon encoder `frlgsim/beacon.py` (friend: serial `0x0002`, `activity = 21`, gname/uname; invert `_dump_beacon`) | 🔨 | `frlgsim/beacon.py` | **1** first cut ✅ (b85 + record round-trip through `_dump_beacon`); **3** LIVE-TUNE field packing / Pia header until the console lists us (HW-A) |
-| HostTransport via `ldn.create_network` / `APNetwork`; generate SSID; `set_application_data` | 🔨 | `transport.py`, `host_spike.py` | **1** import/smoke ✅; **3** run `host_spike.py` to confirm the card can AP-host (HW-0) |
-| Pia HOST FSM (Net `0x11`/`0x50` builders, session type-5 accept, constant id `e5395b69d280`, invert who-sends-first) | ⬜ | new `frlgsim/pia_host.py` | **1** message-builder byte layout; **3** ONLY for the real handshake |
-| Relax role locks behind a `role`/`is_parent` switch (`linkstate.py:116`, `trade.py:341`, `--self-id`) | ⬜ | `linkstate.py`, `trade.py`, `frlgtrade.py` | **1** import/smoke + existing trade regression; **3** live |
+| HostTransport via `ldn.create_network` / `APNetwork`; generate SSID; `set_application_data` | 🔨 | `frlgsim/transport.py`, `frlgtrade_host.py` | **1** import/smoke ✅; **3** run the production trade host to confirm the card can AP-host (HW-0); Mystery Gift discovery still requires its activity-21 beacon |
+| Pia HOST FSM (Net `0x11`/`0x50`, Session acceptance, RTT, property updates) | ✅ | `frlgsim/host_pia.py` | **1** message/FSM tests; **3** proven by the Direct Corner host |
+| Dedicated parent composition without a user-selectable wire role | ✅ | `frlgsim/host_session.py`, `frlgsim/rfu_leader.py`, `frlgsim/host_trade.py` | **1** host regressions; **3** live Direct Corner trade |
 | **Verify M1 on hardware** — console joins our beacon, player exchange, reach `gReceivedRemoteLinkPlayers` | ⬜ | — | **3** ONLY (needs the Switch) — the M1 gate |
 
 **M1 gate (the "Verify M1" row):** console auto-lists us, A-press connects, our logs show
 `0x7700`/`0xA100` sent, the console's `LinkPlayerBlock` received, `gReceivedRemoteLinkPlayers` reached,
 no `CB2_LinkError`.
 
-**Hosting spike — the earliest hardware checkpoints (run `host_spike.py` as root):**
+**Host bring-up — the earliest hardware checkpoints (run `frlgtrade_host.py` as root):**
 - **HW-0 (can the card AP-host?): ❌ FAILED — root cause CONFIRMED (re-tested 2026-08-07).** The only
   adapter (GenBasic dongle = **MT7601U**, `mt7601u`) registers only `managed` + `monitor` with
   nl80211 — **no AP mode**, so `create_ap` → `NL80211_CMD_NEW_INTERFACE(IFTYPE_AP)` → kernel
@@ -113,15 +111,15 @@ no `CB2_LinkError`.
   Problematic* table) and Intel iwlwifi. Pre-purchase: verify the exact hardware revision's chipset,
   then that its driver sets `BIT(NL80211_IFTYPE_AP)` (elixir.bootlin.com; `mt76x02_util.c` covers
   both mt76 picks) and has monitor-TX/injection reports. **On arrival (30 s):**
-  `iw phy <phyX> info` → `* AP` under Supported interface modes, then `host_spike.py`.
+  `iw phy <phyX> info` → `* AP` under Supported interface modes, then the production host command.
 - The MT7601U remains useful as the **second radio: a sniffer** (`sniff.py`).
 
 **Hosting debug harness (built 2026-08-07; all offline-tested, 24/24):**
 - **Preflight** — `transport.preflight_host()` runs before `ldn.create_network` and turns the ENOTSUP
-  wall into ONE clear verdict line (`host_spike.py --skip-preflight` to bypass). Unit-tested against
+  wall into ONE clear verdict line (`frlgtrade_host.py --skip-preflight` to bypass). Unit-tested against
   canned `iw` output for both the MT7601U (reject) and an mt76 (accept), plus the live negative case.
-- **`host_spike.py --debug`** — enables the ldn library's own logging (auth parse failures, ignored
-  frames); **`--trace FILE`** — byte/action JSONL trace via `frlgsim/ldntrace.py`, which monkeypatches
+- **`frlgtrade_host.py --verbose`** enables detailed host/protocol logging; **`--capture FILE`**
+  records a byte/action JSONL trace via `frlgsim/ldntrace.py`, which observes
   the live `APNetwork` (our code, no fork): advertisement bytes (once + on nonce change), our raw
   `application_data`, each auth request/response (hex + MAC + status), join/leave events, data frames
   (first 20 each way + counters), and every UDP :12345 datagram both directions.
@@ -140,7 +138,9 @@ no `CB2_LinkError`.
 
 **Debug runbook (next hardware session, staged gates):**
 1. Preflight passes on the new adapter.
-2. `sudo host_spike.py --debug --trace host.jsonl` → "AP up" + 3-vif check clean.
+2. `sudo -E ./venv/bin/python frlgtrade_host.py --live --verbose --capture host.jsonl PARTY1.pk3 PARTY2.pk3`
+   → "AP up" + 3-vif check clean. This advertises Direct Corner; use the future Mystery Gift entry
+   point with the activity-21 beacon when testing whether the Friend list shows a gift distributor.
 3. `sudo sniff.py --channel <same>` on the MT7601U sees our advertisements (~10/s). Silence =
    monitor-TX/injection problem despite "AP up".
 4. Console → Mystery Gift → Wonder Cards → Friend: listed? If not → beacon content (capture a real host's
@@ -197,7 +197,9 @@ New files:
   `build_delivery_ram_script()` (byte-exact deliveryman script), `build_lansat_berry_gift()`.
 - `frlgsim/beacon.py` — host beacon encoder (first cut): `b85_encode` (inverse of `_b85_decode`),
   `build_beacon` / `build_record` / `game_data_word`, `mutate_beacon` (clone a real capture + tweak).
-- `host_spike.py` — runnable HW-0/HW-A harness (stands up the AP + beacon, logs joins; no gift).
+- `frlgtrade_host.py`, `frlgsim/host_app.py`, `frlgsim/host_beacon.py` — maintained production host
+  path for HW-0, LDN/Pia diagnostics, and trade discovery. It replaces the removed spike harness;
+  a Mystery Gift entry point must supply the activity-21 beacon before it can serve as HW-A for MG.
 - `tests/test_mystery_gift_offline.py` — the Tier-1 suite (21 tests).
 
 Modified (purely additive; existing child/trade path unaffected — verified):

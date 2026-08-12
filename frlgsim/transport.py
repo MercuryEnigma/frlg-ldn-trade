@@ -13,6 +13,7 @@ LiveTransport   - LIVE. Joins the FRLG console's LDN session with kinnay's `ldn`
 """
 
 import json
+import select
 import socket
 import struct
 import subprocess
@@ -674,7 +675,7 @@ class HostTransport:
     def __init__(self, app_data=b"", password=None, nickname="EMU", keys_path="~/.switch/prod.keys",
                  local_comm_id=None, scene_id=None, app_version=None, max_participants=2,
                  phyname="phy0", ifname="ldn-tap", ap_ifname="ldn", mon_ifname="ldn-mon",
-                 channel=None, tracer=None, log=print):
+                 channel=None, skip_encryption=False, tracer=None, log=print):
         self.info = getattr(log, "info", log)
         self.tracer = tracer                # optional ldntrace.Tracer: byte/action trace of hosting
         self.app_data = bytes(app_data or b"")
@@ -687,6 +688,7 @@ class HostTransport:
         self.ap_ifname = ap_ifname          # the AP vif
         self.mon_ifname = mon_ifname        # the monitor vif (scan/advertise)
         self.channel = channel
+        self.skip_encryption = skip_encryption
         if local_comm_id is not None:
             self.LOCAL_COMMUNICATION_ID = local_comm_id
         if scene_id is not None:
@@ -774,6 +776,7 @@ class HostTransport:
             param.ifname = self.ap_ifname
             param.ifname_monitor = self.mon_ifname
             param.ifname_tap = self.ifname
+            param.skip_encryption = self.skip_encryption
             if self.channel is not None:
                 param.channel = self.channel
             self.info("Creating the LDN network (hosting)...")
@@ -818,6 +821,11 @@ class HostTransport:
                      f"mac={bytes(p.mac_address).hex()} name={bytes(p.name)!r}")
             self.info("A console joined the network.")
         elif name == "LeaveEvent":
+            # Keep the public participant view truthful.  The host protocol
+            # drivers use this list as their liveness/teardown signal; leaving
+            # stale entries here made them continue RTT and Reliable traffic
+            # toward a station that had already left the LDN network.
+            self.participants = [p for p in self.participants if p[0] != event.index]
             self.log(f"[host] console left: idx={event.index}")
         else:
             self.log(f"[host] event: {name} {event!r}")
@@ -860,6 +868,13 @@ class HostTransport:
         tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         tx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         tx.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        # A machine can have several link-local routes. Leaving this socket
+        # unbound made limited broadcasts occasionally disappear onto another
+        # interface even though unicast to the child still used ldn-tap. Pia
+        # Session type 5 is a subnet broadcast, so pin every host datagram to
+        # the LDN data plane explicitly.
+        tx.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE,
+                      self.iface.encode("ascii") + b"\x00")
         tx.bind(("0.0.0.0", PIA_PORT))
         self._tx = tx
         rx = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_IP))
@@ -903,6 +918,24 @@ class HostTransport:
                 self.tracer.write("udp_in", src=src_ip, dst=dst_ip, hex=payload.hex())
             out.append((payload, src_ip))
         return out
+
+    def wait_readable(self, timeout):
+        """Wait until TAP IPv4 traffic is ready, without fixed-interval polling.
+
+        HostTransport receives through a nonblocking AF_PACKET socket.  Using
+        select here lets the Pia leader react as soon as the Switch's packet
+        reaches ldn-tap while still returning periodically for JoinEvent,
+        injector-health, and retransmission-deadline checks.
+        """
+        timeout = max(0.0, float(timeout))
+        if self._rx is None:
+            self._stop.wait(timeout)
+            return False
+        try:
+            readable, _, _ = select.select([self._rx], [], [], timeout)
+        except (OSError, ValueError):
+            return False
+        return bool(readable)
 
     def stop(self):
         self._stop.set()
