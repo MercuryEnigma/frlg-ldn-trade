@@ -10,11 +10,11 @@ MysteryGiftClient as link player 1 and executes whatever client scripts we send 
 """
 
 # --- MysteryGiftLink message idents [include/mystery_gift_link.h:8-22] ------------------------
-MG_LINKID_CLIENT_SCRIPT = 16    # server -> client: a 0x400-byte client script to execute
+MG_LINKID_CLIENT_SCRIPT = 16    # server -> client: client-script instruction array
 MG_LINKID_GAME_DATA = 17        # client -> server: struct MysteryGiftLinkGameData
 MG_LINKID_GAME_STAT = 18
 MG_LINKID_RESPONSE = 19         # client -> server: a u32 yes/no/toss answer
-MG_LINKID_READY_END = 20        # either way: 0-length "done" marker
+MG_LINKID_READY_END = 20        # size=0 request expands to a 1024-byte wire payload
 MG_LINKID_DYNAMIC_MSG = 21      # server -> client: a 64-byte live message
 MG_LINKID_CARD = 22             # server -> client: struct WonderCard (332 B)
 MG_LINKID_NEWS = 23             # server -> client: struct WonderNews (444 B)

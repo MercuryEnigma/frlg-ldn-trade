@@ -101,6 +101,7 @@ class HostApplication:
         self._saved_commits = 0
         self._last_trade_state = None
         self._absence_logged = False
+        self._logged_rfu_events = set()
 
     def _load_party(self):
         party = [monmod.Mon.from_file(path) for path in self.config.party_paths]
@@ -177,11 +178,29 @@ class HostApplication:
         for outbound in datagrams:
             self.network.send(outbound.data, outbound.destination)
 
+    # RFU events that mean the peer gave up or is out of step. Previously all of
+    # these were swallowed, so a console that actively disconnected looked
+    # identical to one that simply went quiet.
+    _NOTABLE_RFU_EVENTS = {
+        "disconnect": "The Switch sent an RFU disconnect; it has given up on the link.",
+        "connect_rejected": "Rejected a second RFU connect attempt from the Switch.",
+        "ni_out_of_phase": "Switch NI traffic arrived out of phase.",
+        "uni_early": "Switch sent UNI before the NI handshake finished.",
+    }
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+
     def _log_protocol_events(self, events):
         if "connect" in events:
             self.info("Switch requested the RFU link; preparing the leader A response.")
         if "child_ni_complete" in events:
             self.info("Received the Switch RFU identity; sending join-status NI.")
+        for event in events:
+            message = self._NOTABLE_RFU_EVENTS.get(event)
+            if message and event not in self._logged_rfu_events:
+                self._logged_rfu_events.add(event)
+                self.info(message)
 
     def _log_trade_progress(self):
         state = self.session.trade.state

@@ -99,6 +99,32 @@ def test_33_uni_continuously_reflects_child_and_carries_parent_row():
     assert leader.uni_in == 1 and leader.uni_out == 2
 
 
+def test_tagged_child_command_is_normalized_for_activity_and_echo():
+    """The parent clears childSendCmdId before publishing a child command.
+
+    Native RfuMain2_Parent validates the rolling tag and then clears bits 5--7
+    of childRecvBuffer[i][0] before copying it to gRecvCmds.  A tagged
+    SlotBuilder command is essential here: rfu.parse_slot() masks fragment
+    indices itself, so an untagged test or a parse-only assertion would miss a
+    raw row-1 echo.
+    """
+    leader = _complete_ni_handshake()
+    builder = rfu.SlotBuilder()
+    # Advance the child tag so the held-keys command has nonzero tag bits.
+    builder.build(rfu.held_keys_words(0x0001))
+    tagged = builder.build(rfu.held_keys_words(0x1234))
+    expected = rfu.serialize(rfu.held_keys_words(0x1234))
+    assert tagged != expected and tagged[0] & ~rfu.FRAG_INDEX_MASK
+
+    assert leader.receive(_child_t(rfu.uni_slot(tagged), 100)) == "uni"
+    # HostSession feeds this public field to the activity engine.  The native
+    # equivalent is gRecvCmds[child], which has already had the tag removed.
+    assert leader.child_cmd == expected
+
+    frame = gbaframe.parse_in(leader.tick())
+    assert dict(frame["slots"])[1] == expected
+
+
 def test_duplicate_child_ni_is_reacked_without_corrupting_reassembly():
     leader = RFULeader()
     leader.receive(gbaframe.build_connect(b"\x67\x79"))
@@ -140,6 +166,44 @@ def _complete_ni_handshake():
             leader.receive(_child_t(ack, ts))
             ts += 1
     return leader
+
+
+def test_every_child_command_is_echoed_even_when_they_arrive_in_a_burst():
+    """Row 1 must reflect each child command, not just the most recent one.
+
+    The child depends on this echo: HandleBlockSend waits to see its
+    SEND_BLOCK_INIT reflected before it streams, and SendLastBlock re-sends until
+    its own recvBlock[mpId].receivedFlags - filled only from our echo - is
+    complete [link_rfu_2.c:1398-1416]. Pia hands us several child frames between
+    polls, so echoing "the latest" dropped the rest and the console re-sent the
+    missing fragments until it gave up (observed live: 62 SEND_BLOCKs for a
+    17-fragment block, then an RFU disconnect).
+    """
+    leader = _complete_ni_handshake()
+    builder = rfu.SlotBuilder()
+    expected = [rfu.serialize(rfu.send_block_words(i, bytes([i]) * 12))
+                for i in range(17)]
+    # These are realistic child wire commands: every non-idle slot carries a
+    # rolling tag in bits 5--7 of byte 0.  The parent must not echo that tag.
+    sent = [builder.build(rfu.send_block_words(i, bytes([i]) * 12))
+            for i in range(17)]
+    assert any(raw != normalized for raw, normalized in zip(sent, expected))
+    for ts, slot in enumerate(sent, 100):              # a burst, no polls between
+        leader.receive(_child_t(rfu.uni_slot(slot), ts))
+
+    echoed = []
+    for _ in range(len(sent) + 4):
+        frame = leader.tick(rfu.idle_slot())
+        rec = gbaframe.parse_in(frame)
+        row1 = dict(rec["slots"]).get(1)
+        if row1 is not None and row1 != rfu.idle_slot():
+            echoed.append(row1)
+
+    for slot in expected:
+        assert slot in echoed, (
+            f"fragment {rfu.parse_slot(slot)['index']} was never echoed back")
+    # And the last one stays current once the queue drains, as native gSendCmd does.
+    assert echoed[-1] == expected[-1]
 
 
 if __name__ == "__main__":

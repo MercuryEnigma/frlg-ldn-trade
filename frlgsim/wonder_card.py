@@ -10,8 +10,10 @@ Two byte-exact builders for the gift we hand the console:
                           -> raw FRLG event-script bytecode run by the in-game deliveryman
                              ("Mystery Gift Man", CableClub_EventScript_MysteryGiftMan) via
                              scrcmd 0xCF `trywondercardscript` [src/scrcmd.c:275]. It gives the
-                             player the item with the standard fanfare + message, sets the card's
-                             receipt flag, then `endram` (clears the RAM script, making it one-shot).
+                             player the item with the standard fanfare + message and a level-10
+                             Paras with its configured moves, sets the card's receipt flag, then
+                             `end` (keeps the RAM script available for later deliveryman
+                             interactions).
 
 The console wraps our RAM-script bytes in `struct RamScriptData` and computes the checksum itself
 (CLI_SAVE_RAM_SCRIPT -> InitRamScript_NoObjectEvent, mystery_gift_client.c:230); we only supply the
@@ -31,21 +33,88 @@ WONDER_CARD_TEXT_LENGTH = 40        # per text field
 WONDER_CARD_BODY_TEXT_LINES = 4
 WONDER_CARD_SIZE = 332              # sizeof(struct WonderCard): 330 data + 2 pad (u32 idNumber align)
 
-ITEM_LANSAT_BERRY = 173            # [include/constants/items.h:177]
+# [include/constants/items.h:172:180]
+ITEM_LIECHI_BERRY = 168
+ITEM_GANLON_BERRY = 169
+ITEM_SALAC_BERRY = 170
+ITEM_PETAYA_BERRY = 171
+ITEM_APICOT_BERRY = 172
+ITEM_LANSAT_BERRY = 173
+ITEM_STARF_BERRY = 174
+ITEM_ENIGMA_BERRY = 175          # LAST_BERRY_INDEX
+
+# [include/constants/species.h:328]. ``iconSpecies`` controls the Pokémon icon
+# shown on a Wonder Card; it does not affect the delivered item.
+SPECIES_CLAYDOL = 319
+SPECIES_PARAS = 46
+
+# [include/constants/moves.h]. The delivery script overwrites Paras's four
+# move slots in this exact order after ``givemon`` adds it to the party.
+MOVE_CUT = 15
+MOVE_SPORE = 147
+MOVE_FALSE_SWIPE = 206
+MOVE_SWEET_SCENT = 230
+
+# What the distributor hands out unless told otherwise.
+#
+# A plain `giveitem ITEM_ENIGMA_BERRY` is a normal, usable berry: GetBerryInfo
+# [src/berry.c:996] only substitutes the save's custom berry when
+# IsEnigmaBerryValid() passes, and otherwise falls back to the built-in "ENIGMA"
+# entry in gBerries [src/berry.c:850]. Handing over a *custom* Enigma Berry (its
+# own name, flavours and effect) is a different mechanism entirely - the
+# mystery-event `setenigmaberry` command reached through CLI_RUN_MEVENT_SCRIPT -
+# and is not what this delivery script does.
+DEFAULT_GIFT_TITLE = "AN ENIGMATIC BERRY"
+DEFAULT_GIFT_SUBTITLE = "A gift for you"
+DEFAULT_GIFT_BODY = (
+    "Hello World!",
+    "",
+    "Visit the deliveryman on the 2nd floor",
+    "of the Pokemon Center for a gift.",
+)
+DEFAULT_GIFT_SIGNATURE = " - MercuryEnigma"
+DEFAULT_GIFT_ICON_SPECIES = SPECIES_CLAYDOL
+DEFAULT_GIFT_ITEM = ITEM_ENIGMA_BERRY
+
 
 # --- event-script opcodes used by the delivery script [asm/macros/event.inc] ------------------
 _OP_END = 0x02
 _OP_CALLSTD = 0x09              # callstd <function:u8>
-_OP_ENDRAM = 0x0D              # RAM-script terminator: ClearRamScript + StopScript [scrcmd.c:262]
 _OP_SETVAR_OR_COPY = 0x1A      # setorcopyvar <dest:u16> <src:u16>
 _OP_SETFLAG = 0x29             # setflag <flag:u16>
 _OP_FACEPLAYER = 0x5A
 _OP_LOCK = 0x6A
 _OP_RELEASE = 0x6C
+_OP_GIVEMON = 0x79
+_OP_SETMONMOVE = 0x7B
+_OP_GETPARTYSIZE = 0x43
+_OP_COMPARE_VAR_TO_VALUE = 0x21
+_OP_CHECKFLAG = 0x2B
+_OP_SETVADDRESS = 0xB8
+_OP_VGOTO_IF = 0xBB
+_OP_VMESSAGE = 0xBD
+_OP_WAITMESSAGE = 0x66
+_OP_WAITBUTTONPRESS = 0x6D
 
 _VAR_0x8000 = 0x8000           # giveitem: item id
 _VAR_0x8001 = 0x8001           # giveitem: amount
+_VAR_RESULT = 0x800D            # getpartysize / givemon result
 _STD_OBTAIN_ITEM = 0           # gStdScripts index [event_scripts.s:78] - "obtained the {ITEM}!" + fanfare
+_COMPARE_EQ = 1
+_PARTY_SIZE = 6
+# ScriptSetMonMoveSlot uses the last party mon only when index > PARTY_SIZE;
+# 6 itself is an out-of-bounds index in vanilla FRLG.
+_LAST_PARTY_MON_INDEX = _PARTY_SIZE + 1
+_RAM_SCRIPT_VIRTUAL_BASE = 0x08000000
+# Unlike the Wonder Card's receipt flag, these flags are explicitly scoped to
+# the saved card: SaveWonderCard -> ClearSavedWonderCardAndRelated ->
+# ClearMysteryGiftFlags clears 0x3D8..0x3E7 before storing a replacement card.
+# Keep DONE (0x3D8) available for scripts that use its conventional meaning.
+_FLAG_PARAS_RECEIVED = 0x3D9  # FLAG_MYSTERY_GIFT_1
+
+_TEXT_PARAS_RECEIVED = "{PLAYER} obtained a PARAS\nfrom the deliveryman!"
+_TEXT_PARTY_FULL = "Please make room in your\nparty."
+_TEXT_PARAS_ALREADY_RECEIVED = "Please look forward to future\nmystery gifts!"
 
 
 def _u16(v):
@@ -54,6 +123,34 @@ def _u16(v):
 
 def _setorcopyvar(dest, src):
     return bytes([_OP_SETVAR_OR_COPY]) + _u16(dest) + _u16(src)
+
+
+def _givemon(species, level, item=0):
+    """Encode `givemon species, level, item` with its three unused zero fields."""
+    return (bytes([_OP_GIVEMON]) + _u16(species) + bytes([level]) + _u16(item)
+            + b"\x00" * 9)
+
+
+def _setmonmove(party_index, slot, move):
+    return bytes([_OP_SETMONMOVE, party_index, slot]) + _u16(move)
+
+
+def _script_text(text):
+    """Encode a saved-script dialogue string with ``{PLAYER}`` expansion.
+
+    ``charmap.encode`` intentionally only handles printable characters, while
+    event scripts also need control bytes for the player-name placeholder,
+    newlines, and the string terminator.
+    """
+    out = bytearray()
+    for line_index, line in enumerate(text.split("\n")):
+        for part_index, part in enumerate(line.split("{PLAYER}")):
+            out += charmap.encode(part)
+            if part_index < len(line.split("{PLAYER}")) - 1:
+                out += b"\xFD\x01"  # {PLAYER}
+        if line_index < len(text.split("\n")) - 1:
+            out += b"\xFE"          # CHAR_NEWLINE
+    return bytes(out) + b"\xFF"      # EOS
 
 
 def flag_for_flag_id(flag_id):
@@ -66,19 +163,83 @@ def flag_for_flag_id(flag_id):
     return FLAG_WONDER_CARD_UNUSED_1 - 3 + idx
 
 
-def build_delivery_ram_script(item=ITEM_LANSAT_BERRY, flag=None, flag_id=None):
-    """Deliveryman script: lock, face player, `giveitem item, 1` (fanfare + "obtained" message),
-    set the receipt flag, release, `endram`. `endram` clears the RAM script so the gift is handed
-    over exactly once (afterwards the deliveryman has nothing to run and the card self-retires).
-    Pass either `flag` directly or `flag_id` (the card's flagId) to derive it."""
+def build_delivery_ram_script(item=DEFAULT_GIFT_ITEM, flag=None, flag_id=None):
+    """Build the deliveryman script for the default item and Paras reward.
+
+    It gives ``item`` every time, then gives a level-10 Paras with False Swipe,
+    Cut, Spore, and Sweet Scent exactly once per Wonder Card. A dedicated
+    Mystery Gift flag records the Paras handout and is reset when a replacement
+    Wonder Card is saved. ``setmonmove`` can modify only a party Pokémon, so a
+    relocatable ``vgoto_if`` also skips the Paras section when the party is
+    already full; this avoids changing the moves of the player's existing last
+    party member when ``givemon`` would use the PC. Each of the three outcomes
+    displays its own dialogue before the deliveryman releases the player.
+
+    Unlike ``endram``, ``end`` preserves the saved RAM script. Each later
+    deliveryman interaction can therefore grant another reward when a party
+    slot is free. Pass either ``flag`` directly or ``flag_id`` (the card's
+    flagId) to derive it.
+    """
     if flag is None:
         flag = flag_for_flag_id(flag_id) if flag_id is not None else (FLAG_WONDER_CARD_UNUSED_1)
-    return bytes([_OP_LOCK, _OP_FACEPLAYER]) \
+    out = bytearray(bytes([_OP_LOCK, _OP_FACEPLAYER]) \
         + _setorcopyvar(_VAR_0x8000, item) \
         + _setorcopyvar(_VAR_0x8001, 1) \
         + bytes([_OP_CALLSTD, _STD_OBTAIN_ITEM]) \
-        + bytes([_OP_SETFLAG]) + _u16(flag) \
-        + bytes([_OP_RELEASE, _OP_ENDRAM])
+        + bytes([_OP_SETFLAG]) + _u16(flag))
+
+    # Saved RAM scripts may not use ordinary absolute pointers.  ``setvaddress``
+    # plus ``vgoto_if`` makes the target offset relative to this script's runtime
+    # location [scrcmd.c:165-206].
+    virtual_anchor = len(out)
+    out += bytes([_OP_SETVADDRESS]) + _RAM_SCRIPT_VIRTUAL_BASE.to_bytes(4, "little")
+    # The Berry remains repeatable, but the Paras is per-card. ``checkflag``
+    # sets comparisonResult to FALSE/TRUE, which vgoto_if consumes directly.
+    out += bytes([_OP_CHECKFLAG]) + _u16(_FLAG_PARAS_RECEIVED)
+    already_branch_pointer = len(out)
+    out += bytes([_OP_VGOTO_IF, _COMPARE_EQ]) + b"\x00\x00\x00\x00"
+    out += bytes([_OP_GETPARTYSIZE])
+    out += bytes([_OP_COMPARE_VAR_TO_VALUE]) + _u16(_VAR_RESULT) + _u16(_PARTY_SIZE)
+    full_party_branch_pointer = len(out)
+    out += bytes([_OP_VGOTO_IF, _COMPARE_EQ]) + b"\x00\x00\x00\x00"
+
+    out += _givemon(SPECIES_PARAS, 10)
+    for slot, move in enumerate((MOVE_FALSE_SWIPE, MOVE_CUT, MOVE_SPORE, MOVE_SWEET_SCENT)):
+        out += _setmonmove(_LAST_PARTY_MON_INDEX, slot, move)
+    out += bytes([_OP_SETFLAG]) + _u16(_FLAG_PARAS_RECEIVED)
+
+    def append_message_branch(text):
+        """Append a vmessage/wait/release branch and return its text-pointer slot."""
+        out.append(_OP_VMESSAGE)
+        text_pointer = len(out)
+        out.extend(b"\x00\x00\x00\x00")
+        out.extend(bytes([_OP_WAITMESSAGE, _OP_WAITBUTTONPRESS, _OP_RELEASE, _OP_END]))
+        return text_pointer, text
+
+    received_text_pointer, received_text = append_message_branch(_TEXT_PARAS_RECEIVED)
+    already_label = len(out)
+    already_text_pointer, already_text = append_message_branch(_TEXT_PARAS_ALREADY_RECEIVED)
+    full_party_label = len(out)
+    full_party_text_pointer, full_party_text = append_message_branch(_TEXT_PARTY_FULL)
+
+    # The relative-address base is the address of the setvaddress opcode. All
+    # branches and messages below use virtual addresses so the saved script may
+    # live at any RAM address.
+    def virtual_address(offset):
+        return _RAM_SCRIPT_VIRTUAL_BASE + (offset - virtual_anchor)
+
+    out[already_branch_pointer + 2:already_branch_pointer + 6] = \
+        virtual_address(already_label).to_bytes(4, "little")
+    out[full_party_branch_pointer + 2:full_party_branch_pointer + 6] = \
+        virtual_address(full_party_label).to_bytes(4, "little")
+
+    for text_pointer, text in ((received_text_pointer, received_text),
+                               (already_text_pointer, already_text),
+                               (full_party_text_pointer, full_party_text)):
+        text_offset = len(out)
+        out[text_pointer:text_pointer + 4] = virtual_address(text_offset).to_bytes(4, "little")
+        out += _script_text(text)
+    return bytes(out)
 
 
 def _card_text(s):
@@ -91,7 +252,7 @@ def build_wonder_card(*, flag_id=1003, icon_species=1, id_number=0,
                       max_stamps=0, title="", subtitle="", body=(), footer1="", footer2=""):
     """Build a 332-byte `struct WonderCard`. Defaults pass ValidateWonderCard: flagId != 0,
     type < 3, sendType in {0,1,2}, bgType < 8, maxStamps <= 7. flagId default 1003 -> the first
-    unused receipt-flag slot (FLAG_WONDER_CARD_UNUSED_1), a clean one-shot for a custom gift.
+    unused receipt-flag slot (FLAG_WONDER_CARD_UNUSED_1), a clean receipt marker for a custom gift.
     `body` is up to 4 lines of <=39 chars each."""
     if flag_id == 0:
         raise ValueError("flagId 0 is rejected by ValidateWonderCard")
@@ -117,21 +278,29 @@ def build_wonder_card(*, flag_id=1003, icon_species=1, id_number=0,
     return bytes(out)
 
 
-def build_lansat_berry_gift():
-    """The Milestone-3 payload: a Wonder Card + deliveryman RAM script that hands over one
-    Lansat Berry. Returns (card_bytes_332, ram_script_bytes)."""
-    flag_id = 1003
+def build_berry_gift(item=DEFAULT_GIFT_ITEM, title=DEFAULT_GIFT_TITLE,
+                     subtitle=DEFAULT_GIFT_SUBTITLE, body=DEFAULT_GIFT_BODY,
+                     flag_id=1003):
+    """A Wonder Card + deliveryman RAM script handing over one berry.
+
+    Returns ``(card_bytes_332, ram_script_bytes)``. ``idNumber`` is zero so the
+    Wonder Card viewer suppresses its top-right numeric label.
+    """
     card = build_wonder_card(
-        flag_id=flag_id, icon_species=1, id_number=0x4C414E53,  # "LANS"
-        title="LANSAT BERRY", subtitle="A gift for you",
-        body=("Visit the Mystery Gift man", "to receive your berry."),
-        footer1="frlg-ldn-trade")
-    script = build_delivery_ram_script(item=ITEM_LANSAT_BERRY, flag_id=flag_id)
+        flag_id=flag_id, icon_species=DEFAULT_GIFT_ICON_SPECIES, id_number=0,
+        title=title, subtitle=subtitle, body=body,
+        footer1=DEFAULT_GIFT_SIGNATURE)
+    script = build_delivery_ram_script(item=item, flag_id=flag_id)
     return card, script
 
 
+def build_default_gift(**overrides):
+    """The shipped payload: one Enigma Berry."""
+    return build_berry_gift(**overrides)
+
+
 def _selftest():
-    card, script = build_lansat_berry_gift()
+    card, script = build_default_gift()
     assert len(card) == WONDER_CARD_SIZE, len(card)
     # flagId, iconSpecies, bitfield readback
     assert int.from_bytes(card[0:2], "little") == 1003
@@ -140,13 +309,17 @@ def _selftest():
     assert ((bitfield >> 2) & 0xF) < 8
     assert ((bitfield >> 6) & 0x3) == SEND_TYPE_DISALLOWED
     assert card[9] == 0  # maxStamps
-    # RAM script: exact expected bytecode for `giveitem LANSAT(173), 1; setflag 0x2AA; endram`.
-    expected = bytes([0x6A, 0x5A,
-                      0x1A, 0x00, 0x80, 0xAD, 0x00,
-                      0x1A, 0x01, 0x80, 0x01, 0x00,
-                      0x09, 0x00,
-                      0x29, 0xAA, 0x02,
-                      0x6C, 0x0D])
+    # RAM script: exact bytecode for the repeatable item + one-per-card Paras
+    # and its three distinct outcome messages.
+    expected = bytes.fromhex(
+        "6a5a1a0080af001a01800100090029aa02"
+        "b8000000082bd903bb014900000843210d800600bb0152000008"
+        "792e000a0000000000000000000000"
+        "7b0700ce007b07010f007b070293007b0703e60029d903"
+        "bd5b000008666d6c02bd85000008666d6c02bdb2000008666d6c02"
+        "fd0100e3d6e8d5dde2d9d800d500cabbccbbcdfedae6e3e100e8dcd900d8d9e0ddead9e6ede1d5e2abff"
+        "cae0d9d5e7d900e0e3e3df00dae3e6ebd5e6d800e8e300dae9e8e9e6d9fee1ede7e8d9e6ed00dbdddae8e7abff"
+        "cae0d9d5e7d900e1d5dfd900e6e3e3e100dde200ede3e9e6fee4d5e6e8edadff")
     assert script == expected, script.hex()
     assert flag_for_flag_id(1003) == 0x2AA
     assert flag_for_flag_id(1000) == 0x2A7

@@ -36,6 +36,18 @@ LANGUAGE_ENGLISH = 2               # compatibility.language
 VERSION_FIRE_RED = 4               # gGameVersion FireRed (5 = LeafGreen)
 HASCARD_BIT = 0x20                 # gname[0] |= 0x20 marks "has a Wonder Card to give" [plan/union_room]
 
+# --- the 24-byte record's packed search word, at record[16:18] ------------------------------------
+# The Switch's LDN bridge does not carry RfuGameData verbatim; it repacks the fields the game
+# searches on into one little-endian word. This layout is the live-proven one (a native Direct
+# Corner capture decodes as 0x1584 -> activity 4, LeafGreen, English), and an activity-21 record
+# built with it was listed and joined by a real console under Mystery Gift -> Friend. Bit 7 has
+# never been explained and is preserved from the capture rather than assigned a meaning.
+SEARCH_WORD_OFFSET = 16
+SEARCH_ACTIVITY_MASK = 0x007F
+SEARCH_UNKNOWN_BIT7 = 0x0080
+SEARCH_HAS_CARD = 0x4000
+SEARCH_STARTED_ACTIVITY = 1 << 15
+
 
 # --- Pia 6.16-6.41 system header (sysCommVer 21-22), BIG-ENDIAN -----------------------------------
 # [NintendoClients wiki: LDN-Application-Data-(Pia); see LDN/wiki/]. This 0x5C-byte header precedes

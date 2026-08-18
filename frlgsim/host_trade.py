@@ -2,8 +2,8 @@
 
 This module is deliberately below Pia/Reliable and above the parent RFU poller.  ``tick`` returns
 one parent ``gSendCmd`` (seven u16 words) and ``feed_child_slot`` consumes the child's reflected
-14-byte command row.  The host transport is responsible for putting the command in row 0 of a
-70-byte parent UNI table and the latest child command in row 1.
+14-byte command row.  The activity owns only parent row 0. ``RFULeader`` normalizes the child's
+rolling tag, queues every child command, and supplies row 1 of the 70-byte parent UNI table.
 
 The existing :mod:`frlgsim.trade` engine models the right-seat follower and therefore cannot simply
 be run with ``mpid=0``: the leader owns SET_MONS/START/CONFIRM and all cancel decisions.  This engine
@@ -122,7 +122,7 @@ class HostTradeEngine:
 
     * call ``feed_child_slot(cmd14)`` for each *new* child UNI command;
     * call ``tick()`` once per VBlank and put its returned words in parent row 0;
-    * echo the latest child command in parent row 1 (the RFU parent normally does this itself);
+    * let ``RFULeader`` normalize and echo each child command in parent row 1;
     * after ``disconnect_requested`` becomes true, queue emulator ``'D'`` only after Reliable has
       delivered the final close-link poll.
     """

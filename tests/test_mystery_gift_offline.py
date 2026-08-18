@@ -40,10 +40,10 @@ def test_mg_link_constants():
     assert mg.MG_LINK_BUFFER_SIZE == 0x400 and mg.MG_LINK_HEADER_SIZE == 6 and mg.MG_LINK_MAX_CHUNK == 252
 
 
-# --- Wonder Card + delivery RAM script (the Lansat Berry payload) -----------------------------
+# --- Wonder Card + delivery RAM script ----------------------------------------------------------
 def test_wonder_card_size_and_validation_fields():
     """332 bytes, and the fields the console's ValidateWonderCard [mystery_gift.c:191] checks."""
-    card = wonder_card.build_wonder_card(flag_id=1003, title="LANSAT BERRY")
+    card = wonder_card.build_wonder_card(flag_id=1003, title="ENIGMA BERRY")
     assert len(card) == 332
     assert int.from_bytes(card[0:2], "little") == 1003          # flagId != 0
     assert (card[8] & 0x3) == mg.CARD_TYPE_GIFT                  # type < 3
@@ -64,18 +64,23 @@ def test_wonder_card_rejects_invalid_like_the_console():
 
 
 def test_delivery_ram_script_is_byte_exact():
-    """lock; faceplayer; giveitem LANSAT_BERRY(173),1; setflag 0x2AA; release; endram."""
-    script = wonder_card.build_delivery_ram_script(item=173, flag_id=1003)
-    assert script == bytes([
-        0x6A,                    # lock
-        0x5A,                    # faceplayer
-        0x1A, 0x00, 0x80, 0xAD, 0x00,   # setorcopyvar VAR_0x8000, 173
-        0x1A, 0x01, 0x80, 0x01, 0x00,   # setorcopyvar VAR_0x8001, 1
-        0x09, 0x00,              # callstd STD_OBTAIN_ITEM
-        0x29, 0xAA, 0x02,        # setflag FLAG_WONDER_CARD_UNUSED_1 (0x2AA)
-        0x6C,                    # release
-        0x0D,                    # endram
-    ])
+    """The saved script has exact per-card Paras control flow and messages."""
+    def expected(item_lo):
+        script = bytearray(bytes.fromhex(
+            "6a5a1a0080af001a01800100090029aa02"
+            "b8000000082bd903bb014900000843210d800600bb0152000008"
+            "792e000a0000000000000000000000"
+            "7b0700ce007b07010f007b070293007b0703e60029d903"
+            "bd5b000008666d6c02bd85000008666d6c02bdb2000008666d6c02"
+            "fd0100e3d6e8d5dde2d9d800d500cabbccbbcdfedae6e3e100e8dcd900d8d9e0ddead9e6ede1d5e2abff"
+            "cae0d9d5e7d900e0e3e3df00dae3e6ebd5e6d800e8e300dae9e8e9e6d9fee1ede7e8d9e6ed00dbdddae8e7abff"
+            "cae0d9d5e7d900e1d5dfd900e6e3e3e100dde200ede3e9e6fee4d5e6e8edadff"))
+        script[5] = item_lo  # the item passed to setorcopyvar VAR_0x8000
+        return bytes(script)
+
+    assert wonder_card.build_delivery_ram_script(item=173, flag_id=1003) == expected(0xAD)
+    # The shipped default: ITEM_ENIGMA_BERRY (175 = 0xAF).
+    assert wonder_card.build_delivery_ram_script(flag_id=1003) == expected(0xAF)
 
 
 def test_flag_id_maps_to_receipt_flag():
@@ -89,10 +94,18 @@ def test_flag_id_maps_to_receipt_flag():
         raise AssertionError(f"flagId {bad} should be rejected")
 
 
-def test_lansat_gift_bundle():
-    card, script = wonder_card.build_lansat_berry_gift()
-    assert len(card) == 332 and len(script) == 19
-    assert mg.crc16(card) == 0x82BD   # anchor for the assembled card
+def test_default_gift_bundle():
+    """The shipped payload is an Enigma Berry plus a level-10 Paras."""
+    card, script = wonder_card.build_default_gift()
+    assert len(card) == 332 and len(script) == 227
+    assert wonder_card.DEFAULT_GIFT_ITEM == wonder_card.ITEM_ENIGMA_BERRY == 175
+    assert int.from_bytes(card[2:4], "little") == wonder_card.SPECIES_CLAYDOL
+    # idNumber zero hides the top-right numeric display in WonderCard_Draw.
+    assert int.from_bytes(card[4:8], "little") == 0
+    assert charmap.decode(card[250:290]).endswith("MercuryEnigma")
+    # The delivery script must name that item, not whatever it used to be.
+    assert script == wonder_card.build_delivery_ram_script(
+        item=wonder_card.ITEM_ENIGMA_BERRY, flag_id=1003)
 
 
 # --- Parent-side 0x54 framing (sim as leader/parent) -----------------------------------------

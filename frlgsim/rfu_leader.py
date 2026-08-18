@@ -58,6 +58,28 @@ def _parent_ni_fields(slot):
             (value >> rfu.PARENT_LLSF_PHASE_SHIFT) & 3)
 
 
+def _normalize_child_cmd(slot):
+    """Return the native parent's ``gRecvCmds`` representation of a child slot.
+
+    ``ChildBuildSendCmd`` puts its rolling ``childSendCmdId`` in bits 5--7 of
+    byte 0.  That value is transport sequencing metadata, not part of the RFU
+    command.  Native ``RfuMain2_Parent`` validates the sequence and then does
+    ``childRecvBuffer[i][0] &= 0x1f`` before copying the command into
+    ``gRecvCmds`` (``link_rfu_2.c``).  Row 1 is that copied command, so both
+    the echoed wire row and the activity-facing ``child_cmd`` must see the
+    normalized form.
+
+    Sequence validation is deliberately outside this small bridge adaptation:
+    the existing leader does not yet retain a native child receive-id state.
+    Clearing the tag here is nevertheless required before the command reaches
+    either native-equivalent consumer.
+    """
+    cmd = bytearray(bytes(slot)[:rfu.COMM_SLOT_LENGTH].ljust(
+        rfu.COMM_SLOT_LENGTH, b"\x00"))
+    cmd[0] &= rfu.FRAG_INDEX_MASK
+    return bytes(cmd)
+
+
 class RFULeader:
     """One-child RFU leader state machine.
 
@@ -80,6 +102,22 @@ class RFULeader:
         self.state = WAIT_CONNECT
         self.connect_id = None
         self.child_cmd = rfu.idle_slot()
+        # Row 1 of every parent UNI table reflects the child's own command back
+        # to it, and the child *depends* on that: HandleBlockSend waits to see
+        # its SEND_BLOCK_INIT echoed before streaming, and SendLastBlock keeps
+        # re-sending until its own recvBlock[mpId].receivedFlags - filled purely
+        # from our echo - is complete [link_rfu_2.c:1398-1416].
+        #
+        # On hardware the two sides are lockstep at one command per VBlank, so
+        # reflecting "the latest" is the same as reflecting all of them. Over
+        # this bridge Pia delivers several child frames between our polls, and
+        # echoing only the newest silently drops the rest: the console then
+        # re-sends the missing fragments forever and times out. Queue them and
+        # reflect one per poll instead. Replaying an old command is harmless -
+        # receivedFlags is cumulative and idempotent.
+        self._echo_queue = deque()
+        self._echo_cmd = rfu.idle_slot()
+        self.echo_backlog_peak = 0
         self.child_game_data = None
         self.k_acks = 0
         self.uni_in = 0
@@ -198,11 +236,16 @@ class RFULeader:
                 return "child_ni_complete"
             return "child_ni"
 
-        # UNI is accepted only once both halves of NI have completed.  Save the
-        # child's gSendCmd so every parent UNI table can reflect it in row 1.
+        # UNI is accepted only once both halves of NI have completed.  Native
+        # RfuMain2_Parent strips the rolling childSendCmdId before it copies a
+        # child command into gRecvCmds.  Our row 1 is that gRecvCmds row, and
+        # the activity consumes the same native-equivalent command, so do this
+        # once at the RFU-parent boundary before either path observes it.
         if self.state != UNI or rec.get("cmd") is None:
             return "uni_early"
-        self.child_cmd = bytes(rec["cmd"][:rfu.COMM_SLOT_LENGTH]).ljust(rfu.COMM_SLOT_LENGTH, b"\x00")
+        self.child_cmd = _normalize_child_cmd(rec["cmd"])
+        self._echo_queue.append(self.child_cmd)
+        self.echo_backlog_peak = max(self.echo_backlog_peak, len(self._echo_queue))
         self.uni_in += 1
         return "uni"
 
@@ -245,7 +288,11 @@ class RFULeader:
                     rfu.COMM_SLOT_LENGTH, b"\x00")
             else:
                 parent_cmd = rfu.serialize(parent_words)
-            table = rfu.pack_recv_cmds([parent_cmd, self.child_cmd])
+            # One queued child command per poll; when the queue is empty the last
+            # one stays current, which is what native gSendCmd does anyway.
+            if self._echo_queue:
+                self._echo_cmd = self._echo_queue.popleft()
+            table = rfu.pack_recv_cmds([parent_cmd, self._echo_cmd])
             self.uni_out += 1
             return self._wrap_parent_t(rfu.parent_uni_slot(table, self.bm_slot))
         return None

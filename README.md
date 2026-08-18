@@ -17,6 +17,7 @@ This demo was recorded using the **ALFA AWUS036ACHM**. The RZ616 is half as fast
 
 - End-to-end trading with a real game running on a real Switch
 - .pk3/.ek3 input and output
+- Mystery Gift distribution: hand the console a Wonder Card and an item
 
 ## Requirements
 - Linux
@@ -89,7 +90,47 @@ for discovery, Pia Session, LinkPlayer, and trainer-card identity.
 See [the host design document](docs/frlgtrade_host_design.md) for the component boundaries, protocol
 flow, timing ownership, trainer propagation, and shutdown sequence.
 
-**Step-by-step Usage**
+### Mystery Gift distribution
+
+`frlgmg_host.py` hands the console a Wonder Card plus a delivery RAM script, so the player collects
+an item (an Enigma Berry by default) from the delivery man on the second floor of any Pokémon Center:
+
+This Friend-path flow is hardware-proven end to end: discovery, LDN/Pia/RFU, LinkPlayer exchange,
+Wonder Card save, and deliveryman script. The shipped script stays available after use, so later
+deliveryman conversations grant the configured item again. Keep Wireless Communication (JoySpot)
+separate: its Switch bridge serial requirement remains unsatisfied.
+
+```bash
+sudo -E ./.venv/bin/python -u frlgmg_host.py --live
+```
+
+The hardware-proven configuration for this MT7601U setup is:
+
+```bash
+sudo -E ./.venv/bin/python -u frlgmg_host.py --live \
+  --phy phy3 --skip-encryption --native-nonce-sequence --session-response-first
+```
+
+`phy3` is machine-specific; use an AP-capable PHY on another system.
+
+On the Switch choose **Mystery Gift → Wonder Cards → Friend** and pick the host from the list. The
+save must already have Mystery Gift unlocked through the Poké Mart questionnaire. Use `--item`,
+`--flag-id` and `--title` to change the gift; `--help` for the full CLI.
+
+The console does not decide the flow — its Mystery Gift client connects, asks us for instructions,
+and runs whatever script we push, so this can drive flows a real cartridge cannot. See
+[MYSTERY_GIFT_DISTRIBUTOR.md](MYSTERY_GIFT_DISTRIBUTOR.md).
+
+**Why Friend and not Wireless Communication?** The wireless-distributor ("JoySpot") menu requires the
+partner's RFU serial to be `0x7F7D`, but the Switch's LDN bridge writes `0x0002` for every peer it
+finds, after our beacon has already been received — there is no field in the advertisement to change.
+21 controlled advertisements confirmed it; see
+[docs/joyspot_discovery_findings.md](docs/joyspot_discovery_findings.md) for the derivation and the
+full tested surface. Both menus reach the identical gift conversation, so only the zero-button
+auto-connect is lost. `joyspot_probe.py` remains in the tree as the advertisement-only research tool
+that produced those results.
+
+### Direct Corner trade workflow
 
 1. Run the host command and wait for `Hosting Direct Corner`.
 2. On the Switch, enter the Direct Corner and choose **Join Group**.
