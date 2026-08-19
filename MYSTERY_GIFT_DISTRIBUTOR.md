@@ -1,12 +1,12 @@
 # FireRed Mystery Gift Distributor
 
-Hand a real Switch FireRed/LeafGreen save a Wonder Card + delivery RAM script over LDN, so the player
-collects an Enigma Berry from the delivery man on the second floor of any Pokémon Center.
+Hand a real Switch FireRed/LeafGreen save a Wonder Card + delivery RAM script over LDN. The default
+card awards one level-50 Celebi from the deliveryman on the second floor of any Pokémon Center. It
+does not include an item unless the host is started with `--item ID`.
 
 **Status: hardware-proven end to end.** The Friend-path distributor has completed discovery,
 connection, LinkPlayer exchange, card transfer, save/reboot persistence, and deliveryman execution
-on a Switch. The delivery script remains available after use for later conversations. The successful
-diagnostic reference is `mg_live_12` (kept locally and ignored by Git).
+on a Switch. The delivery script remains available after use for later conversations.
 
 ```
 sudo -E ./.venv/bin/python -u frlgmg_host.py --live
@@ -24,9 +24,8 @@ sudo -E ./.venv/bin/python -u frlgmg_host.py --live \
 Then on the Switch: **Mystery Gift → Wonder Cards → Friend**, pick the host from the list.
 
 Companion docs: [docs/joyspot_discovery_findings.md](docs/joyspot_discovery_findings.md) (why the
-Wireless Communication path is not reachable), [MYSTERY_GIFT_PLAN.md](MYSTERY_GIFT_PLAN.md)
-(historical plan),
-`.claude/skills/mystery-gift/SKILL.md`, [docs/frlgtrade_host_design.md](docs/frlgtrade_host_design.md).
+Wireless Communication path is not reachable), [SKILLS.md](SKILLS.md), and
+[docs/frlgtrade_host_design.md](docs/frlgtrade_host_design.md).
 
 ---
 
@@ -94,7 +93,7 @@ Switch's valid block, then sends its own block and waits for the standby barrier
 | `frlgsim/host_mystery_gift.py` | the leader activity engine: `tick()` → parent gSendCmd, `feed_child_slot()` ← child row |
 | `frlgsim/host_mg_app.py` | run configuration + application, subclassing the trade host's proven runtime |
 | `frlgmg_host.py` | CLI |
-| `frlgsim/wonder_card.py` | the payload: 332-byte card + `giveitem`/`setflag`/`end` delivery script |
+| `frlgsim/wonder_card.py` | the payload: 332-byte card + Celebi `givemon`/`setmonmove`/`setflag`/`end` delivery script; `giveitem` is optional |
 
 `HostSession` now takes an `engine=` keyword, so the LDN/Pia/Reliable/RFU stack is shared verbatim
 with the trade host and only the activity above it differs.
@@ -128,8 +127,8 @@ that was dropped without an error.
 
 `tests/test_mystery_gift_flow.py` models the RFU block-receive gate, `MGL_Receive`, and
 one-command-per-frame client-script execution. `tests/test_mystery_gift_end_to_end.py` adds an
-impaired Reliable/RFU path and a native-shaped ID16/ID17 framing fixture. These are still offline
-regressions; the completed `mg_live_12` run is the hardware evidence for the shipping Friend path.
+impaired Reliable/RFU path and a native-shaped ID16/ID17 framing fixture. These remain offline
+regressions; a completed Switch Friend-path run is the hardware evidence for the shipping flow.
 
 ## 6. Not built
 

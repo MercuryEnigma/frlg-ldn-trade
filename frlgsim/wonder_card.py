@@ -10,8 +10,9 @@ Two byte-exact builders for the gift we hand the console:
                           -> raw FRLG event-script bytecode run by the in-game deliveryman
                              ("Mystery Gift Man", CableClub_EventScript_MysteryGiftMan) via
                              scrcmd 0xCF `trywondercardscript` [src/scrcmd.c:275]. It gives the
-                             player the item with the standard fanfare + message and a level-10
-                             Paras with its configured moves, sets the card's receipt flag, then
+                             player an optional item with the standard fanfare + message, then a
+                             level-50 Celebi with its configured moves and sets the card's receipt
+                             flag, then
                              `end` (keeps the RAM script available for later deliveryman
                              interactions).
 
@@ -46,14 +47,14 @@ ITEM_ENIGMA_BERRY = 175          # LAST_BERRY_INDEX
 # [include/constants/species.h:328]. ``iconSpecies`` controls the Pokémon icon
 # shown on a Wonder Card; it does not affect the delivered item.
 SPECIES_CLAYDOL = 319
-SPECIES_PARAS = 46
+SPECIES_CELEBI = 251
 
-# [include/constants/moves.h]. The delivery script overwrites Paras's four
+# [include/constants/moves.h]. The delivery script overwrites Celebi's four
 # move slots in this exact order after ``givemon`` adds it to the party.
-MOVE_CUT = 15
-MOVE_SPORE = 147
-MOVE_FALSE_SWIPE = 206
-MOVE_SWEET_SCENT = 230
+MOVE_LEECH_SEED = 73
+MOVE_RECOVER = 105
+MOVE_HEAL_BELL = 215
+MOVE_SAFEGUARD = 219
 
 # What the distributor hands out unless told otherwise.
 #
@@ -64,17 +65,19 @@ MOVE_SWEET_SCENT = 230
 # own name, flavours and effect) is a different mechanism entirely - the
 # mystery-event `setenigmaberry` command reached through CLI_RUN_MEVENT_SCRIPT -
 # and is not what this delivery script does.
-DEFAULT_GIFT_TITLE = "AN ENIGMATIC BERRY"
-DEFAULT_GIFT_SUBTITLE = "A gift for you"
+DEFAULT_GIFT_TITLE = "CELEBI GIFT"
+DEFAULT_GIFT_SUBTITLE = "A timeless gift"
 DEFAULT_GIFT_BODY = (
-    "Hello World!",
-    "",
-    "Visit the deliveryman on the 2nd floor",
-    "of the Pokemon Center for a gift.",
+    "A special CELEBI is waiting",
+    "just for you!",
+    "Visit the deliveryman on the",
+    "2nd floor to receive CELEBI.",
 )
 DEFAULT_GIFT_SIGNATURE = " - MercuryEnigma"
-DEFAULT_GIFT_ICON_SPECIES = SPECIES_CLAYDOL
-DEFAULT_GIFT_ITEM = ITEM_ENIGMA_BERRY
+DEFAULT_GIFT_ICON_SPECIES = SPECIES_CELEBI
+# The Celebi card has no item by default. Pass an item ID explicitly to include
+# a repeatable ``giveitem`` reward in addition to Celebi.
+DEFAULT_GIFT_ITEM = None
 
 
 # --- event-script opcodes used by the delivery script [asm/macros/event.inc] ------------------
@@ -110,11 +113,11 @@ _RAM_SCRIPT_VIRTUAL_BASE = 0x08000000
 # the saved card: SaveWonderCard -> ClearSavedWonderCardAndRelated ->
 # ClearMysteryGiftFlags clears 0x3D8..0x3E7 before storing a replacement card.
 # Keep DONE (0x3D8) available for scripts that use its conventional meaning.
-_FLAG_PARAS_RECEIVED = 0x3D9  # FLAG_MYSTERY_GIFT_1
+_FLAG_REWARD_RECEIVED = 0x3D9  # FLAG_MYSTERY_GIFT_1
 
-_TEXT_PARAS_RECEIVED = "{PLAYER} obtained a PARAS\nfrom the deliveryman!"
-_TEXT_PARTY_FULL = "Please make room in your\nparty."
-_TEXT_PARAS_ALREADY_RECEIVED = "Please look forward to future\nmystery gifts!"
+_TEXT_REWARD_RECEIVED = "{PLAYER} received a CELEBI\nfrom the deliveryman!"
+_TEXT_PARTY_FULL = "Oh, your party appears to be full.\nPlease make room and come back!"
+_TEXT_REWARD_ALREADY_RECEIVED = "Please look forward to future\nMYSTERY GIFTS!"
 
 
 def _u16(v):
@@ -143,12 +146,14 @@ def _script_text(text):
     newlines, and the string terminator.
     """
     out = bytearray()
-    for line_index, line in enumerate(text.split("\n")):
-        for part_index, part in enumerate(line.split("{PLAYER}")):
+    lines = text.split("\n")
+    for line_index, line in enumerate(lines):
+        parts = line.split("{PLAYER}")
+        for part_index, part in enumerate(parts):
             out += charmap.encode(part)
-            if part_index < len(line.split("{PLAYER}")) - 1:
+            if part_index < len(parts) - 1:
                 out += b"\xFD\x01"  # {PLAYER}
-        if line_index < len(text.split("\n")) - 1:
+        if line_index < len(lines) - 1:
             out += b"\xFE"          # CHAR_NEWLINE
     return bytes(out) + b"\xFF"      # EOS
 
@@ -164,16 +169,18 @@ def flag_for_flag_id(flag_id):
 
 
 def build_delivery_ram_script(item=DEFAULT_GIFT_ITEM, flag=None, flag_id=None):
-    """Build the deliveryman script for the default item and Paras reward.
+    """Build the deliveryman script for an optional item and Celebi reward.
 
-    It gives ``item`` every time, then gives a level-10 Paras with False Swipe,
-    Cut, Spore, and Sweet Scent exactly once per Wonder Card. A dedicated
-    Mystery Gift flag records the Paras handout and is reset when a replacement
-    Wonder Card is saved. ``setmonmove`` can modify only a party Pokémon, so a
-    relocatable ``vgoto_if`` also skips the Paras section when the party is
-    already full; this avoids changing the moves of the player's existing last
-    party member when ``givemon`` would use the PC. Each of the three outcomes
-    displays its own dialogue before the deliveryman releases the player.
+    An explicitly supplied ``item`` is given on every interaction. A level-50
+    Celebi with Leech Seed, Recover, Heal Bell, and Safeguard is given exactly
+    once per Wonder Card. ``givemon`` gives Celebi the receiving player's OT
+    and trainer ID. A dedicated Mystery Gift flag records the handout and is
+    reset when a replacement Wonder Card is saved. ``setmonmove`` can modify
+    only a party Pokémon, so a relocatable ``vgoto_if`` also skips the Celebi
+    section when the party is already full; this avoids changing the moves of
+    the player's existing last party member when ``givemon`` would use the PC.
+    Each outcome displays its own dialogue before the deliveryman releases the
+    player.
 
     Unlike ``endram``, ``end`` preserves the saved RAM script. Each later
     deliveryman interaction can therefore grant another reward when a party
@@ -182,20 +189,24 @@ def build_delivery_ram_script(item=DEFAULT_GIFT_ITEM, flag=None, flag_id=None):
     """
     if flag is None:
         flag = flag_for_flag_id(flag_id) if flag_id is not None else (FLAG_WONDER_CARD_UNUSED_1)
-    out = bytearray(bytes([_OP_LOCK, _OP_FACEPLAYER]) \
-        + _setorcopyvar(_VAR_0x8000, item) \
-        + _setorcopyvar(_VAR_0x8001, 1) \
-        + bytes([_OP_CALLSTD, _STD_OBTAIN_ITEM]) \
-        + bytes([_OP_SETFLAG]) + _u16(flag))
+    if item is not None and (type(item) is not int or not 0 < item <= 0xFFFF):
+        raise ValueError("item must be a positive 16-bit item id or None")
+
+    out = bytearray(bytes([_OP_LOCK, _OP_FACEPLAYER]))
+    if item is not None:
+        out += (_setorcopyvar(_VAR_0x8000, item)
+                + _setorcopyvar(_VAR_0x8001, 1)
+                + bytes([_OP_CALLSTD, _STD_OBTAIN_ITEM])
+                + bytes([_OP_SETFLAG]) + _u16(flag))
 
     # Saved RAM scripts may not use ordinary absolute pointers.  ``setvaddress``
     # plus ``vgoto_if`` makes the target offset relative to this script's runtime
     # location [scrcmd.c:165-206].
     virtual_anchor = len(out)
     out += bytes([_OP_SETVADDRESS]) + _RAM_SCRIPT_VIRTUAL_BASE.to_bytes(4, "little")
-    # The Berry remains repeatable, but the Paras is per-card. ``checkflag``
+    # An optional item remains repeatable, but Celebi is per-card. ``checkflag``
     # sets comparisonResult to FALSE/TRUE, which vgoto_if consumes directly.
-    out += bytes([_OP_CHECKFLAG]) + _u16(_FLAG_PARAS_RECEIVED)
+    out += bytes([_OP_CHECKFLAG]) + _u16(_FLAG_REWARD_RECEIVED)
     already_branch_pointer = len(out)
     out += bytes([_OP_VGOTO_IF, _COMPARE_EQ]) + b"\x00\x00\x00\x00"
     out += bytes([_OP_GETPARTYSIZE])
@@ -203,10 +214,14 @@ def build_delivery_ram_script(item=DEFAULT_GIFT_ITEM, flag=None, flag_id=None):
     full_party_branch_pointer = len(out)
     out += bytes([_OP_VGOTO_IF, _COMPARE_EQ]) + b"\x00\x00\x00\x00"
 
-    out += _givemon(SPECIES_PARAS, 10)
-    for slot, move in enumerate((MOVE_FALSE_SWIPE, MOVE_CUT, MOVE_SPORE, MOVE_SWEET_SCENT)):
+    out += _givemon(SPECIES_CELEBI, 50)
+    for slot, move in enumerate((MOVE_LEECH_SEED, MOVE_RECOVER, MOVE_HEAL_BELL, MOVE_SAFEGUARD)):
         out += _setmonmove(_LAST_PARTY_MON_INDEX, slot, move)
-    out += bytes([_OP_SETFLAG]) + _u16(_FLAG_PARAS_RECEIVED)
+    # For no-item cards, mark the Wonder Card received only once Celebi was
+    # successfully added. Item-bearing cards already did so at item handout.
+    if item is None:
+        out += bytes([_OP_SETFLAG]) + _u16(flag)
+    out += bytes([_OP_SETFLAG]) + _u16(_FLAG_REWARD_RECEIVED)
 
     def append_message_branch(text):
         """Append a vmessage/wait/release branch and return its text-pointer slot."""
@@ -216,9 +231,9 @@ def build_delivery_ram_script(item=DEFAULT_GIFT_ITEM, flag=None, flag_id=None):
         out.extend(bytes([_OP_WAITMESSAGE, _OP_WAITBUTTONPRESS, _OP_RELEASE, _OP_END]))
         return text_pointer, text
 
-    received_text_pointer, received_text = append_message_branch(_TEXT_PARAS_RECEIVED)
+    received_text_pointer, received_text = append_message_branch(_TEXT_REWARD_RECEIVED)
     already_label = len(out)
-    already_text_pointer, already_text = append_message_branch(_TEXT_PARAS_ALREADY_RECEIVED)
+    already_text_pointer, already_text = append_message_branch(_TEXT_REWARD_ALREADY_RECEIVED)
     full_party_label = len(out)
     full_party_text_pointer, full_party_text = append_message_branch(_TEXT_PARTY_FULL)
 
@@ -281,7 +296,7 @@ def build_wonder_card(*, flag_id=1003, icon_species=1, id_number=0,
 def build_berry_gift(item=DEFAULT_GIFT_ITEM, title=DEFAULT_GIFT_TITLE,
                      subtitle=DEFAULT_GIFT_SUBTITLE, body=DEFAULT_GIFT_BODY,
                      flag_id=1003):
-    """A Wonder Card + deliveryman RAM script handing over one berry.
+    """A Wonder Card + deliveryman RAM script handing over Celebi and an optional item.
 
     Returns ``(card_bytes_332, ram_script_bytes)``. ``idNumber`` is zero so the
     Wonder Card viewer suppresses its top-right numeric label.
@@ -295,7 +310,7 @@ def build_berry_gift(item=DEFAULT_GIFT_ITEM, title=DEFAULT_GIFT_TITLE,
 
 
 def build_default_gift(**overrides):
-    """The shipped payload: one Enigma Berry."""
+    """The shipped payload: one level-50 Celebi per card and no item."""
     return build_berry_gift(**overrides)
 
 
@@ -309,17 +324,17 @@ def _selftest():
     assert ((bitfield >> 2) & 0xF) < 8
     assert ((bitfield >> 6) & 0x3) == SEND_TYPE_DISALLOWED
     assert card[9] == 0  # maxStamps
-    # RAM script: exact bytecode for the repeatable item + one-per-card Paras
+    # RAM script: exact bytecode for the no-item, one-per-card Celebi reward
     # and its three distinct outcome messages.
     expected = bytes.fromhex(
-        "6a5a1a0080af001a01800100090029aa02"
-        "b8000000082bd903bb014900000843210d800600bb0152000008"
-        "792e000a0000000000000000000000"
-        "7b0700ce007b07010f007b070293007b0703e60029d903"
-        "bd5b000008666d6c02bd85000008666d6c02bdb2000008666d6c02"
-        "fd0100e3d6e8d5dde2d9d800d500cabbccbbcdfedae6e3e100e8dcd900d8d9e0ddead9e6ede1d5e2abff"
-        "cae0d9d5e7d900e0e3e3df00dae3e6ebd5e6d800e8e300dae9e8e9e6d9fee1ede7e8d9e6ed00dbdddae8e7abff"
-        "cae0d9d5e7d900e1d5dfd900e6e3e3e100dde200ede3e9e6fee4d5e6e8edadff")
+        "6a5ab8000000082bd903bb014c00000843210d800600bb0155000008"
+        "79fb00320000000000000000000000"
+        "7b070049007b070169007b0702d7007b0703db0029aa0229d903"
+        "bd5e000008666d6c02bd89000008666d6c02bdb6000008666d6c02"
+        "fd0100e6d9d7d9ddead9d800d500bdbfc6bfbcc3fedae6e3e100e8dcd900d8d9e0ddead9e6ede1d5e2abff"
+        "cae0d9d5e7d900e0e3e3df00dae3e6ebd5e6d800e8e300dae9e8e9e6d9fec7d3cdcebfccd300c1c3c0cecdabff"
+        "c9dcb800ede3e9e600e4d5e6e8ed00d5e4e4d9d5e6e700e8e300d6d900dae9e0e0ad"
+        "fecae0d9d5e7d900e1d5dfd900e6e3e3e100d5e2d800d7e3e1d900d6d5d7dfabff")
     assert script == expected, script.hex()
     assert flag_for_flag_id(1003) == 0x2AA
     assert flag_for_flag_id(1000) == 0x2A7

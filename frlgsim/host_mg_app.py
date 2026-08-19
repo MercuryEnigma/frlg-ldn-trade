@@ -24,7 +24,7 @@ from .mg_server import SERVER_RESULT_NAMES, SVR_MSG_CARD_SENT
 class MysteryGiftRunConfig:
     """Options for one Wonder Card distribution session."""
 
-    item: int = wonder_card.DEFAULT_GIFT_ITEM
+    item: int | None = wonder_card.DEFAULT_GIFT_ITEM
     flag_id: int = 1003
     card_title: str = wonder_card.DEFAULT_GIFT_TITLE
     card_subtitle: str = wonder_card.DEFAULT_GIFT_SUBTITLE
@@ -51,8 +51,8 @@ class MysteryGiftRunConfig:
     session_response_first: bool = True
 
     def __post_init__(self):
-        if type(self.item) is not int or not 0 < self.item <= 0xFFFF:
-            raise ValueError("item must be a positive 16-bit item id")
+        if self.item is not None and (type(self.item) is not int or not 0 < self.item <= 0xFFFF):
+            raise ValueError("item must be a positive 16-bit item id or None")
         # Raises with the accepted range if flag_id is outside sReceivedGiftFlags.
         wonder_card.flag_for_flag_id(self.flag_id)
         if self.password is not None and not isinstance(self.password, bytes):
@@ -83,9 +83,9 @@ class MysteryGiftHostApplication(HostApplication):
     def _build_payload(self):
         """Build the live payload from the shared Wonder Card defaults.
 
-        ``build_berry_gift`` is the sole source of the card's body, Claydol
-        icon, signature, and hidden ID number.  The CLI may still override the
-        item, receipt flag, title, and subtitle.
+        ``build_default_gift`` is the sole source of the card's body, Celebi
+        icon, signature, and hidden ID number. The CLI may add an item or
+        override the receipt flag, title, and subtitle.
         """
         return wonder_card.build_default_gift(
             item=self.config.item,
@@ -134,7 +134,7 @@ class MysteryGiftHostApplication(HostApplication):
                   f"u16=0x{int.from_bytes(self.session.rfu.host_session_id, 'little'):04x}")
         self.info(f"Gift: {self.config.card_title!r} - Wonder Card flagId "
                   f"{self.config.flag_id} (receipt flag 0x{flag:03x}), "
-                  f"item {self.config.item}, "
+                  f"item {self.config.item if self.config.item is not None else 'none'}, "
                   f"card {len(self.card)}B + RAM script {len(self.ram_script)}B")
         self.info("Advertising ACTIVITY_WONDER_CARD. On the Switch choose "
                   "Mystery Gift -> Wonder Cards -> Friend.")

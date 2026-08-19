@@ -3,8 +3,8 @@
 
 We advertise ACTIVITY_WONDER_CARD and act as the Mystery Gift *server*: the
 console picks us from Mystery Gift -> Wonder Cards -> Friend, and we push it the
-client script, the Wonder Card and the delivery RAM script.  The player then
-collects the item from the delivery man on the second floor of any Pokemon
+client script, the Wonder Card and the delivery RAM script. The player then
+collects the gift from the delivery man on the second floor of any Pokemon
 Center.
 
 The Wireless Communication ("wireless distributor") path is not reachable from a
@@ -45,8 +45,8 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--item", type=int, default=DEFAULT_GIFT_ITEM, metavar="ID",
-                        help=f"item id the delivery script gives "
-                             f"(default: {DEFAULT_GIFT_ITEM}, Enigma Berry)")
+                        help="optional item id the delivery script gives on every visit "
+                             "(default: no item)")
     parser.add_argument("--flag-id", type=int, default=1003, metavar="ID",
                         help="Wonder Card flagId, 1000..1019; 1003 is the first "
                              "unused receipt-flag slot (default: 1003)")
@@ -78,13 +78,16 @@ def build_parser():
     parser.add_argument("--max-participants", type=int, default=6,
                         choices=range(2, 9), metavar="2-8")
     parser.add_argument("--skip-preflight", action="store_true")
-    parser.add_argument("--skip-encryption", "--skip_encryption", action="store_true",
-                        help="delegate CCMP encryption to mac80211/hardware")
+    parser.add_argument("--skip-encryption", "--skip_encryption",
+                        action=argparse.BooleanOptionalAction, default=True,
+                        help="delegate CCMP encryption to mac80211/hardware (default); "
+                             "--no-skip-encryption enables Python CCMP")
     parser.add_argument("--native-nonce-sequence", "--native_nonce_sequence",
-                        action="store_true",
-                        help="use FireRed's session-wide incrementing Pia nonce")
-    parser.add_argument("--session-response-first", action="store_true",
-                        help="send Session type 2 unicast before type 5 broadcast")
+                        action=argparse.BooleanOptionalAction, default=True,
+                        help="use FireRed's session-wide incrementing Pia nonce (default)")
+    parser.add_argument("--session-response-first", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="send Session type 2 unicast before type 5 broadcast (default)")
     return parser
 
 

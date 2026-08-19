@@ -64,23 +64,22 @@ def test_wonder_card_rejects_invalid_like_the_console():
 
 
 def test_delivery_ram_script_is_byte_exact():
-    """The saved script has exact per-card Paras control flow and messages."""
-    def expected(item_lo):
-        script = bytearray(bytes.fromhex(
-            "6a5a1a0080af001a01800100090029aa02"
-            "b8000000082bd903bb014900000843210d800600bb0152000008"
-            "792e000a0000000000000000000000"
-            "7b0700ce007b07010f007b070293007b0703e60029d903"
-            "bd5b000008666d6c02bd85000008666d6c02bdb2000008666d6c02"
-            "fd0100e3d6e8d5dde2d9d800d500cabbccbbcdfedae6e3e100e8dcd900d8d9e0ddead9e6ede1d5e2abff"
-            "cae0d9d5e7d900e0e3e3df00dae3e6ebd5e6d800e8e300dae9e8e9e6d9fee1ede7e8d9e6ed00dbdddae8e7abff"
-            "cae0d9d5e7d900e1d5dfd900e6e3e3e100dde200ede3e9e6fee4d5e6e8edadff"))
-        script[5] = item_lo  # the item passed to setorcopyvar VAR_0x8000
-        return bytes(script)
+    """The saved script has exact per-card Celebi control flow and messages."""
+    expected_no_item = bytes.fromhex(
+            "6a5ab8000000082bd903bb014c00000843210d800600bb0155000008"
+            "79fb00320000000000000000000000"
+            "7b070049007b070169007b0702d7007b0703db0029aa0229d903"
+            "bd5e000008666d6c02bd89000008666d6c02bdb6000008666d6c02"
+            "fd0100e6d9d7d9ddead9d800d500bdbfc6bfbcc3fedae6e3e100e8dcd900d8d9e0ddead9e6ede1d5e2abff"
+            "cae0d9d5e7d900e0e3e3df00dae3e6ebd5e6d800e8e300dae9e8e9e6d9fec7d3cdcebfccd300c1c3c0cecdabff"
+            "c9dcb800ede3e9e600e4d5e6e8ed00d5e4e4d9d5e6e700e8e300d6d900dae9e0e0ad"
+            "fecae0d9d5e7d900e1d5dfd900e6e3e3e100d5e2d800d7e3e1d900d6d5d7dfabff")
 
-    assert wonder_card.build_delivery_ram_script(item=173, flag_id=1003) == expected(0xAD)
-    # The shipped default: ITEM_ENIGMA_BERRY (175 = 0xAF).
-    assert wonder_card.build_delivery_ram_script(flag_id=1003) == expected(0xAF)
+    assert wonder_card.build_delivery_ram_script(flag_id=1003) == expected_no_item
+    # An explicitly requested item keeps the standard giveitem prefix.
+    item_script = wonder_card.build_delivery_ram_script(item=173, flag_id=1003)
+    assert item_script.startswith(bytes.fromhex("6a5a1a0080ad001a01800100090029aa02"))
+    assert len(item_script) == len(expected_no_item) + 12
 
 
 def test_flag_id_maps_to_receipt_flag():
@@ -95,17 +94,15 @@ def test_flag_id_maps_to_receipt_flag():
 
 
 def test_default_gift_bundle():
-    """The shipped payload is an Enigma Berry plus a level-10 Paras."""
+    """The shipped payload is a level-50 Celebi with no item."""
     card, script = wonder_card.build_default_gift()
-    assert len(card) == 332 and len(script) == 227
-    assert wonder_card.DEFAULT_GIFT_ITEM == wonder_card.ITEM_ENIGMA_BERRY == 175
-    assert int.from_bytes(card[2:4], "little") == wonder_card.SPECIES_CLAYDOL
+    assert len(card) == 332 and len(script) == 251
+    assert wonder_card.DEFAULT_GIFT_ITEM is None
+    assert int.from_bytes(card[2:4], "little") == wonder_card.SPECIES_CELEBI
     # idNumber zero hides the top-right numeric display in WonderCard_Draw.
     assert int.from_bytes(card[4:8], "little") == 0
     assert charmap.decode(card[250:290]).endswith("MercuryEnigma")
-    # The delivery script must name that item, not whatever it used to be.
-    assert script == wonder_card.build_delivery_ram_script(
-        item=wonder_card.ITEM_ENIGMA_BERRY, flag_id=1003)
+    assert script == wonder_card.build_delivery_ram_script(item=None, flag_id=1003)
 
 
 # --- Parent-side 0x54 framing (sim as leader/parent) -----------------------------------------

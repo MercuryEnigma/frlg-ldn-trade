@@ -17,7 +17,7 @@ This demo was recorded using the **ALFA AWUS036ACHM**. The RZ616 is half as fast
 
 - End-to-end trading with a real game running on a real Switch
 - .pk3/.ek3 input and output
-- Mystery Gift distribution: hand the console a Wonder Card and an item
+- Mystery Gift distribution: hand the console a Wonder Card and scripted gift
 
 ## Requirements
 - Linux
@@ -92,13 +92,15 @@ flow, timing ownership, trainer propagation, and shutdown sequence.
 
 ### Mystery Gift distribution
 
-`frlgmg_host.py` hands the console a Wonder Card plus a delivery RAM script, so the player collects
-an item (an Enigma Berry by default) from the delivery man on the second floor of any Pokémon Center:
+`frlgmg_host.py` hands the console a Wonder Card plus a delivery RAM script. The default card gives
+one level-50 Celebi; the deliveryman script remains available after use, but the card-scoped reward
+flag prevents another Celebi from being claimed from that card.
 
 This Friend-path flow is hardware-proven end to end: discovery, LDN/Pia/RFU, LinkPlayer exchange,
 Wonder Card save, and deliveryman script. The shipped script stays available after use, so later
-deliveryman conversations grant the configured item again. Keep Wireless Communication (JoySpot)
-separate: its Switch bridge serial requirement remains unsatisfied.
+deliveryman conversations can show the card's follow-up dialogue. An optional `--item ID` adds a
+repeatable standard-item reward. Keep Wireless Communication (JoySpot) separate: its Switch bridge
+serial requirement remains unsatisfied.
 
 ```bash
 sudo -E ./.venv/bin/python -u frlgmg_host.py --live
@@ -114,8 +116,9 @@ sudo -E ./.venv/bin/python -u frlgmg_host.py --live \
 `phy3` is machine-specific; use an AP-capable PHY on another system.
 
 On the Switch choose **Mystery Gift → Wonder Cards → Friend** and pick the host from the list. The
-save must already have Mystery Gift unlocked through the Poké Mart questionnaire. Use `--item`,
-`--flag-id` and `--title` to change the gift; `--help` for the full CLI.
+save must already have Mystery Gift unlocked through the Poké Mart questionnaire. Use `--item ID`
+to add a standard item, or `--flag-id`, `--title`, and `--subtitle` to customize the card; `--help`
+lists the complete CLI.
 
 The console does not decide the flow — its Mystery Gift client connects, asks us for instructions,
 and runs whatever script we push, so this can drive flows a real cartridge cannot. See

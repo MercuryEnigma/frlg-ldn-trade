@@ -84,23 +84,22 @@ def test_trade_advertisement_is_unchanged_by_the_gift_host():
 
 
 # --- run configuration ---------------------------------------------------------------------------
-def test_default_config_is_the_enigma_berry_gift():
+def test_default_config_is_the_no_item_celebi_gift():
     config = MysteryGiftRunConfig()
-    assert config.item == wonder_card.ITEM_ENIGMA_BERRY == 175
-    assert config.card_title == wonder_card.DEFAULT_GIFT_TITLE == "AN ENIGMATIC BERRY"
+    assert config.item is None
+    assert config.card_title == wonder_card.DEFAULT_GIFT_TITLE == "CELEBI GIFT"
     assert config.flag_id == 1003
     assert config.skip_encryption is True
     assert config.native_nonce_sequence is True
     assert config.session_response_first is True
     assert wonder_card.flag_for_flag_id(config.flag_id) == 0x2AA
-    # The card and script the app actually builds must name that item.
+    # The card and script the app actually builds must retain the no-item default.
     app = MysteryGiftHostApplication.__new__(MysteryGiftHostApplication)
     app.config = config
     card, script = app._build_payload()
-    assert script == wonder_card.build_delivery_ram_script(
-        item=wonder_card.ITEM_ENIGMA_BERRY, flag_id=1003)
-    assert charmap.decode(card[10:50]).startswith("AN ENIGMATIC BERRY")
-    assert int.from_bytes(card[2:4], "little") == wonder_card.SPECIES_CLAYDOL
+    assert script == wonder_card.build_delivery_ram_script(item=None, flag_id=1003)
+    assert charmap.decode(card[10:50]).startswith("CELEBI GIFT")
+    assert int.from_bytes(card[2:4], "little") == wonder_card.SPECIES_CELEBI
     assert int.from_bytes(card[4:8], "little") == 0
     assert charmap.decode(card[250:290]).endswith("MercuryEnigma")
 
