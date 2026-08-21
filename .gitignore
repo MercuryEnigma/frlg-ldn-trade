@@ -6,6 +6,7 @@
 /*/
 !/frlgsim/
 !/tests/
+!/pokefirered/
 
 # Never publish Pokemon data files (live-trade outputs can carry trainer/account
 # identifiers); covers any stray .pk3/.ek3 at the root or inside frlgsim/ too.
@@ -15,8 +16,6 @@
 # Python bytecode (applies inside frlgsim/ as well)
 __pycache__/
 *.pyc
-
-pokefirered/
 
 # Nested standalone clone (Goppier/Gen3DistributionRoms) — its own git repo,
 # kept local so its changes never touch this repo.

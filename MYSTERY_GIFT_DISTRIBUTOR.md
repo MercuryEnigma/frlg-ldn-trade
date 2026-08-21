@@ -46,19 +46,24 @@ path. Only the **LDN + Pia + beacon** layers are Switch-exclusive.
 
 ### Tier 1 — Integrated / offline (Python, no hardware)
 Pure unit tests of byte-exact builders and state machines against decomp facts. File:
-[tests/test_mystery_gift_offline.py](tests/test_mystery_gift_offline.py) (13 tests, no new deps).
-Run: `.venv/bin/python tests/test_mystery_gift_offline.py`. Fast, deterministic, CI-able. State
+[tests/test_mystery_gift_offline.py](tests/test_mystery_gift_offline.py) (33 tests, no new deps).
+Run: `.venv/bin/python tests/test_mystery_gift_offline.py` (33 tests). Fast, deterministic, CI-able. State
 machines (MG transport, server script driver, parent link) are testable here by running them against
 a **Python model of the console client** — no console needed.
 
 ### Tier 2 — mGBA emulator (GBA ROM, no Switch)
 Runs the FRLG ROM (retail or a pokefirered build). Two uses:
 - **(2a) Payload validation via save / RAM injection — proves M3 with no Switch and no link.**
-  Inject our `WonderCard` + `cardCrc` at `SaveBlock1.mysteryGift` (offset **0x3120**) and the
-  `RamScript` (checksum + body) at `SaveBlock1.ramScript` (offset **0x361C**), fix the affected
-  save-sector footer checksums (`SECTOR_DATA_SIZE = 3968`, `CalculateChecksum`, save.c), OR poke those
-  fields in RAM at runtime via mGBA's Lua scripting. Then walk to the Pokémon Center deliveryman and
-  confirm the **Lansat + Liechi Berries** are received and the one-shot (`setflag 0x2AA` / `endram`) holds.
+  **Tooling built: [frlgsim/save_inject.py](frlgsim/save_inject.py).** It injects our `WonderCard` +
+  `cardCrc` at `SaveBlock1.mysteryGift` (offset **0x3120**, card at +452 / cardCrc at +448) and the
+  `RamScript` (checksum + body) at `SaveBlock1.ramScript` (offset **0x361C**) into the active save
+  slot's SaveBlock1 chunk-3 sector (both fields land in footer-id-4), then recomputes that sector's
+  footer checksum (`CalculateChecksum` over the id-4 chunk size **3816 B**). Run:
+  `.venv/bin/python -m frlgsim.save_inject <in.sav> -o <out.sav>`. Then walk to the Pokémon Center
+  deliveryman and confirm the **Lansat + Liechi Berries** are received and the one-shot
+  (`setflag 0x2AA` / `endram`) holds. In-game prerequisite: the save must already have Mystery Gift
+  enabled (deliveryman present on PC 2F). A runtime Lua RAM-poke is an alternative but the save
+  injector is the reliable, fully offline-testable path.
 - **(2b) RFU/link protocol peer — investigate.** IF mGBA's GBA-Wireless-Adapter emulation is
   sufficient and exposes a link socket, drive the FRLG ROM as the MG *client* from Python at the RFU
   level to validate the parent link + MG transport **without** the Switch. mGBA wireless-adapter
@@ -170,7 +175,7 @@ against a faithful Python model of `MysteryGiftClient` before any hardware.
 |---|---|---|---|
 | `WonderCard` (332B) builder — passes `ValidateWonderCard` | ✅ | `wonder_card.py` | **1** size + field-range asserts |
 | Delivery RAM script (`giveitem LANSAT,1; giveitem LIECHI,1; setflag 0x2AA; endram`) | ✅ | `wonder_card.py` | **1** byte-exact vs event.inc opcodes |
-| **Deliveryman actually gives the berries** (card+script effect in-game) | ⬜ | (save/RAM injection tooling) | **2a** mGBA save/RAM injection → walk to deliveryman → berries + one-shot; **3** final end-to-end |
+| **Deliveryman actually gives the berries** (card+script effect in-game) | 🔨 | `save_inject.py` | **2a** injector ✅ offline (`inject_berry_gift`, verified by a console-model of `GetSavedRamScriptIfValid`); needs a real `.sav` + mGBA → walk to deliveryman → berries + one-shot; **3** final end-to-end |
 | Clean close (`0x5F00 READY_CLOSE_LINK`; drive `0x6600` standby counter) | ⬜ | `mystery_gift.py`/`rfu.py` | **3** live (console self-disconnects, force-saves) |
 
 ### Engine & CLI wiring (spans M1–M3)
@@ -187,7 +192,7 @@ talking again does nothing (one-shot). This is the only fully-Switch-gated resul
 
 ## 4. Progress so far (built & tested this session)
 
-**All offline, byte-verified against the decomp; 17/17 tests + a regression smoke test pass.**
+**All offline, byte-verified against the decomp; 33/33 tests pass.**
 
 New files:
 - `frlgsim/mystery_gift.py` — `crc16()` (proven equal to the game's table-driven `CalcCRC16WithTable`,
@@ -198,7 +203,11 @@ New files:
 - `frlgsim/beacon.py` — host beacon encoder (first cut): `b85_encode` (inverse of `_b85_decode`),
   `build_beacon` / `build_record` / `game_data_word`, `mutate_beacon` (clone a real capture + tweak).
 - `host_spike.py` — runnable HW-0/HW-A harness (stands up the AP + beacon, logs joins; no gift).
-- `tests/test_mystery_gift_offline.py` — the Tier-1 suite (21 tests).
+- `frlgsim/save_inject.py` — Tier-2a save/RAM injector: writes the card + delivery RAM script into a
+  real FRLG `.sav` (active-slot detection by save counter, footer-id-4 sector, cardCrc + RAM-script
+  crc16 + folded sector checksum), with a console-side model (`get_saved_ram_script_if_valid`) that
+  reproduces the game's deliveryman validation gate. CLI: `python -m frlgsim.save_inject`.
+- `tests/test_mystery_gift_offline.py` — the Tier-1 suite (33 tests).
 
 Modified (purely additive; existing child/trade path unaffected — verified):
 - `frlgsim/transport.py` — `HostTransport` (the `ldn.create_network` / `APNetwork` hosting counterpart
@@ -221,9 +230,10 @@ status 5; and the `ParentNIReceiver` acks the child's game-data NI and reassembl
 
 ### Reproduce
 ```bash
-.venv/bin/python tests/test_mystery_gift_offline.py   # 13/13 passed
+.venv/bin/python tests/test_mystery_gift_offline.py   # 33/33 passed
 .venv/bin/python -m frlgsim.mystery_gift              # crc self-test
 .venv/bin/python -m frlgsim.wonder_card               # payload self-test
+.venv/bin/python -m frlgsim.save_inject <in.sav> -o <out.sav>  # Tier-2a: inject the berry gift
 ```
 
 ---
@@ -244,11 +254,13 @@ status 5; and the `ParentNIReceiver` acks the child's game-data NI and reassembl
 
 ## 6. Suggested next step
 
-Two Tier-1/Tier-2 tasks can proceed **without the Switch** and de-risk the most:
-1. **M2 transport + server driver against a Python `MysteryGiftClient` model** (Tier 1) — validates the
-   whole gift conversation in-process.
-2. **mGBA payload injection** (Tier 2a) — proves the berries are actually delivered by the
-   deliveryman from our exact card + RAM-script bytes.
+Tasks that can proceed **without the Switch** and de-risk the most:
+1. **Confirm the injected berry gift in mGBA** (Tier 2a) — the injector `save_inject.py` is built and
+   offline-verified; the remaining step is running it on a real FRLG `.sav` (one with Mystery Gift
+   already enabled), loading in mGBA, and walking to the deliveryman to confirm the Lansat + Liechi
+   Berries drop and the one-shot holds. Needs a ROM + save (none in the tree yet).
+2. **M2 transport + server driver against a Python `MysteryGiftClient` model** (Tier 1) — validates the
+   whole gift conversation in-process, still fully offline.
 
 The remaining M1 host layers (Pia host FSM, HostTransport, beacon visibility) are Tier-3 and best done
 live at the console.

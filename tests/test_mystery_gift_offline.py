@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from frlgsim import gbaframe, rfu, linkplayer, wonder_card, ni, beacon, transport
 from frlgsim import mystery_gift as mg
+from frlgsim import save_inject as si
 
 
 # --- CRC16 (MysteryGiftLink header checksum) -------------------------------------------------
@@ -105,6 +106,34 @@ def test_berry_gift_bundle():
         0x29, 0xAA, 0x02,                # setflag 0x2AA (one receipt flag for the whole gift)
         0x6C, 0x0D,                      # release; endram
     ])
+
+
+def test_altering_cave_script_cycles_all_nine_encounter_tables():
+    """Increment 0..8 modulo 9, show the embedded message, and retain the RAM script."""
+    script = wonder_card.build_altering_cave_script()
+    assert script[:37] == bytes([
+        0xB8, 0x00, 0x00, 0x00, 0x00,        # setvaddress 0
+        0x17, 0x24, 0x40, 0x01, 0x00,        # addvar VAR_ALTERING_CAVE_WILD_SET, 1
+        0x21, 0x24, 0x40, 0x09, 0x00,        # compare variable, 9 tables
+        0xBB, 0x00, 0x1A, 0x00, 0x00, 0x00,  # if value < 9, skip reset to offset 26
+        0x16, 0x24, 0x40, 0x00, 0x00,        # otherwise setvar variable, 0
+        0x6A, 0x5A,                          # lock; faceplayer
+        0xBD, 0x25, 0x00, 0x00, 0x00,        # vmessage embedded text at offset 37
+        0x66, 0x6D, 0x6C, 0x02,              # waitmessage; waitbuttonpress; release; end
+    ])
+    assert script[-1] == 0xFF                 # message terminator
+    assert script[36] == 0x02                 # persistent `end`, not one-shot `endram`
+    assert [(value + 1) % wonder_card.NUM_ALTERING_CAVE_TABLES for value in range(9)] \
+        == [1, 2, 3, 4, 5, 6, 7, 8, 0]
+
+
+def test_altering_cave_gift_bundle():
+    card, script = wonder_card.build_altering_cave_gift()
+    assert len(card) == 332
+    assert int.from_bytes(card[0:2], "little") == 1003
+    assert int.from_bytes(card[2:4], "little") == 41       # Zubat card icon
+    assert script == wonder_card.build_altering_cave_script()
+    assert len(script) <= 995
 
 
 # --- Parent-side 0x54 framing (sim as leader/parent) -----------------------------------------
@@ -336,6 +365,148 @@ def test_tracer_writes_jsonl(tmp_path=None):
     assert kinds == ["udp_out", "advert", "summary"]
     assert all(r["rec"] == "trace" and "ts" in r for r in recs)
     assert recs[0]["hex"] == "5c00" and recs[2]["counts"]["advert"] == 1
+
+
+# --- save/RAM injection (Tier-2a payload delivery via mGBA) -----------------------------------
+def _make_synthetic_sav(slot0_counter=10, slot1_counter=9):
+    """A minimal but structurally faithful 128 KiB FRLG flash save: two slots of 14 signed
+    sectors, logical ids rotated so id != physical index (id 4 lands on the last sector of each
+    slot). Only the footers matter to the injector; sector data is zeroed."""
+    sav = bytearray(si.SECTORS_COUNT * si.SECTOR_SIZE)
+    for slot, counter in ((0, slot0_counter), (1, slot1_counter)):
+        for within in range(si.NUM_SECTORS_PER_SLOT):
+            phys = slot * si.NUM_SECTORS_PER_SLOT + within
+            base = phys * si.SECTOR_SIZE
+            sect_id = (within + 5) % si.NUM_SECTORS_PER_SLOT      # rotate: id 4 -> within 13
+            sav[base + si.SECTOR_ID_OFF:base + si.SECTOR_ID_OFF + 2] = sect_id.to_bytes(2, "little")
+            sav[base + si.SECTOR_SIGNATURE_OFF:base + si.SECTOR_SIGNATURE_OFF + 4] = \
+                si.SECTOR_SIGNATURE.to_bytes(4, "little")
+            sav[base + si.SECTOR_COUNTER_OFF:base + si.SECTOR_COUNTER_OFF + 4] = \
+                counter.to_bytes(4, "little")
+    return bytes(sav)
+
+
+def test_save_inject_offsets_and_chunk_size():
+    """The SaveBlock1 field offsets and the id-4 chunk size, straight from the decomp."""
+    assert si.MYSTERYGIFT_CARDCRC_OFF == 0x3120 + 448
+    assert si.MYSTERYGIFT_CARD_OFF == 0x3120 + 452
+    assert si.RAM_SCRIPT_DATA_SIZE == 999
+    assert si.sb1_chunk_size(3) == 3816            # min(0x3D68 - 3*3968, 3968)
+    assert si.sb1_chunk_size(0) == 3968
+    # Every byte we write must sit inside the checksummed range of the id-4 sector.
+    size = si.sb1_chunk_size(3)
+    for off, length in ((si.MYSTERYGIFT_CARDCRC_OFF, 4), (si.MYSTERYGIFT_CARD_OFF, 332),
+                        (si.SB1_RAMSCRIPT_OFF, 4 + si.RAM_SCRIPT_DATA_SIZE)):
+        lo = off - si.SAVEBLOCK1_END_CHUNK_BASE
+        assert 0 <= lo and lo + length <= size, (hex(off), lo, length)
+
+
+def test_sector_checksum_matches_calculatechecksum():
+    """CalculateChecksum: u32-word sum then (>>16)+ fold to u16 (save.c:614)."""
+    assert si.sector_checksum(b"\x01\x00\x00\x00\x02\x00\x00\x00", 8) == 3
+    # Overflow fold: 0xFFFFFFFF + 0xFFFFFFFF -> 0xFFFFFFFE -> (0xFFFF + 0xFFFE) & 0xFFFF.
+    assert si.sector_checksum(b"\xff" * 8, 8) == 0xFFFD
+    # `size` truncates: trailing bytes past `size` are ignored.
+    assert si.sector_checksum(b"\x01\x00\x00\x00\xff\xff\xff\xff", 4) == 1
+
+
+def test_ram_script_struct_layout_and_checksum():
+    _, script = wonder_card.build_berry_gift()
+    data, crc = si.build_ram_script_struct(script)
+    assert len(data) == 999
+    assert data[0] == 51 and data[1] == 0xFF and data[2] == 0xFF and data[3] == 0xFF
+    assert data[4:4 + len(script)] == script
+    assert data[4 + len(script):] == bytes(995 - len(script))   # zero-padded body
+    assert crc == mg.crc16(data)
+    try:
+        si.build_ram_script_struct(b"\x00" * 996)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("RAM script body over 995 B must be rejected")
+
+
+def test_inject_selects_active_slot_by_counter():
+    """The injected sector is the id-4 sector of the greatest-counter slot (GetSaveValidStatus)."""
+    card, script = wonder_card.build_berry_gift()
+    _, info = si.inject_gift(_make_synthetic_sav(slot0_counter=10, slot1_counter=9), card, script)
+    assert info["slot"] == 0 and info["phys_sector"] == 13 and info["counter"] == 10
+    _, info2 = si.inject_gift(_make_synthetic_sav(slot0_counter=3, slot1_counter=99), card, script)
+    assert info2["slot"] == 1 and info2["phys_sector"] == 27 and info2["counter"] == 99
+
+
+def test_inject_produces_a_console_valid_gift():
+    """After injection the console's deliveryman gate accepts card + RAM script and yields our
+    exact delivery bytecode (get_saved_ram_script_if_valid mirrors script.c:554)."""
+    card, script = wonder_card.build_berry_gift()
+    sav, _ = si.inject_gift(_make_synthetic_sav(), card, script)
+    got_card, crc_ok = si.read_saved_wonder_card(sav)
+    assert crc_ok and got_card == card and si.validate_wonder_card(got_card)
+    body = si.get_saved_ram_script_if_valid(sav)
+    assert body is not None and body[:len(script)] == script
+    assert body[len(script):] == bytes(995 - len(script))
+
+
+def test_inject_recomputes_the_sector_checksum():
+    """The written footer checksum equals CalculateChecksum over the id-4 chunk size, and it
+    actually changed from the pre-injection value."""
+    card, script = wonder_card.build_berry_gift()
+    before = _make_synthetic_sav()
+    sav, info = si.inject_gift(before, card, script)
+    base = info["phys_sector"] * si.SECTOR_SIZE
+    stored = int.from_bytes(sav[base + si.SECTOR_CHECKSUM_OFF:base + si.SECTOR_CHECKSUM_OFF + 2], "little")
+    assert stored == info["sector_checksum"]
+    assert stored == si.sector_checksum(sav[base:base + si.SECTOR_DATA_SIZE], si.sb1_chunk_size(3))
+    old = int.from_bytes(before[base + si.SECTOR_CHECKSUM_OFF:base + si.SECTOR_CHECKSUM_OFF + 2], "little")
+    assert stored != old
+
+
+def test_inject_is_nondestructive_and_local():
+    """Only the target sector's data + its footer checksum change; footer id/signature/counter
+    and every other sector are byte-for-byte identical; the input bytes object is untouched."""
+    card, script = wonder_card.build_berry_gift()
+    before = _make_synthetic_sav()
+    sav, info = si.inject_gift(before, card, script)
+    assert len(sav) == len(before)
+    phys = info["phys_sector"]
+    for p in range(si.SECTORS_COUNT):
+        b0, b1 = p * si.SECTOR_SIZE, (p + 1) * si.SECTOR_SIZE
+        if p != phys:
+            assert sav[b0:b1] == before[b0:b1], f"unrelated sector {p} changed"
+    base = phys * si.SECTOR_SIZE
+    for off, width in ((si.SECTOR_ID_OFF, 2), (si.SECTOR_SIGNATURE_OFF, 4), (si.SECTOR_COUNTER_OFF, 4)):
+        assert sav[base + off:base + off + width] == before[base + off:base + off + width]
+
+
+def test_inject_validates_inputs_and_save():
+    """Bad card size, an oversized script, and a save with no signed id-4 sector are all rejected."""
+    card, script = wonder_card.build_berry_gift()
+    for bad, exc in ((lambda: si.inject_gift(_make_synthetic_sav(), card[:-1], script), ValueError),
+                     (lambda: si.inject_gift(_make_synthetic_sav(), card, b"\x00" * 996), ValueError),
+                     (lambda: si.inject_gift(bytes(si.SECTORS_COUNT * si.SECTOR_SIZE), card, script), ValueError),
+                     (lambda: si.inject_gift(b"\x00" * 1024, card, script), ValueError)):
+        try:
+            bad()
+        except exc:
+            continue
+        raise AssertionError("expected rejection")
+
+
+def test_deliveryman_gate_rejects_tampering():
+    """A one-byte change to the card or RAM script fails its CRC and the deliveryman runs nothing."""
+    card, script = wonder_card.build_berry_gift()
+    sav, info = si.inject_gift(_make_synthetic_sav(), card, script)
+    base = info["phys_sector"] * si.SECTOR_SIZE
+    card_off = base + si.MYSTERYGIFT_CARD_OFF - si.SAVEBLOCK1_END_CHUNK_BASE
+    ram_off = base + si.SB1_RAMSCRIPT_OFF + 4 - si.SAVEBLOCK1_END_CHUNK_BASE
+    for pos in (card_off, ram_off):
+        t = bytearray(sav)
+        t[pos] ^= 0xFF
+        assert si.get_saved_ram_script_if_valid(bytes(t)) is None
+    # Corrupting the RAM-script magic also disqualifies it.
+    t = bytearray(sav)
+    t[ram_off] = 0
+    assert si.get_saved_ram_script_if_valid(bytes(t)) is None
 
 
 # --- standalone runner (no pytest) ------------------------------------------------------------

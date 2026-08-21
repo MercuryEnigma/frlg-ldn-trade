@@ -33,16 +33,64 @@ WONDER_CARD_SIZE = 332              # sizeof(struct WonderCard): 330 data + 2 pa
 
 ITEM_LIECHI_BERRY = 168            # [include/constants/items.h:172]
 ITEM_LANSAT_BERRY = 173            # [include/constants/items.h:177]
+ITEM_MASTER_BALL = 1               # [include/constants/items.h:5]
+ITEM_NONE = 0                      # [include/constants/items.h:4]
+SPECIES_RAIKOU = 243               # [include/constants/species.h:250]
+SPECIES_ENTEI = 244
+SPECIES_SUICUNE = 245
+SPECIES_CLAYDOL = 319              # [include/constants/species.h:328] - Wonder Card icon
+OBJ_EVENT_GFX_ENTEI = 141          # overworld sprite gfx [include/constants/event_objects.h:147-149]
+OBJ_EVENT_GFX_SUICUNE = 142
+OBJ_EVENT_GFX_RAIKOU = 143
+DIR_WEST = 3                       # [include/constants/global.h:112]
+
+# Which legendary beast appears, by the player's starter. VAR_STARTER_MON [vars.h:98] is
+# 0:Bulbasaur, 1:Squirtle, 2:Charmander (verified against the rival-starter scripts).
+STARTER_BEASTS = {
+    0: (SPECIES_SUICUNE, OBJ_EVENT_GFX_SUICUNE),   # Bulbasaur -> Suicune
+    1: (SPECIES_ENTEI, OBJ_EVENT_GFX_ENTEI),       # Squirtle  -> Entei
+    2: (SPECIES_RAIKOU, OBJ_EVENT_GFX_RAIKOU),     # Charmander-> Raikou
+}
 
 # --- event-script opcodes used by the delivery script [asm/macros/event.inc] ------------------
 _OP_END = 0x02
 _OP_CALLSTD = 0x09              # callstd <function:u8>
 _OP_ENDRAM = 0x0D              # RAM-script terminator: ClearRamScript + StopScript [scrcmd.c:262]
+_OP_SETVAR = 0x16              # setvar <dest:u16> <value:u16>
+_OP_ADDVAR = 0x17              # addvar <dest:u16> <value:u16>
+_OP_COPYVAR = 0x19            # copyvar <dest:u16> <src:u16>
 _OP_SETVAR_OR_COPY = 0x1A      # setorcopyvar <dest:u16> <src:u16>
+_OP_COMPARE_VAR_TO_VALUE = 0x21  # compare <var:u16> <value:u16> -> ctx->comparisonResult
+_OP_SPECIAL = 0x25            # special <index:u16>: call a native function from data/specials.inc
+_OP_DELAY = 0x28              # delay <frames:u16>
 _OP_SETFLAG = 0x29             # setflag <flag:u16>
+_OP_GETPLAYERXY = 0x42        # getplayerxy <x_var:u16> <y_var:u16> -> writes player's live map coords
+
+# FRLG's Quest Log recorder desyncs the field script across a scripted battle; every stock
+# dowildbattle script (Electrode/Zapdos) calls this right after to re-cut the recording so the
+# script resumes. Omitting it is why a post-battle giveitem silently never runs. [data/specials.inc]
+SPECIAL_QUESTLOG_CUTRECORDING = 392
 _OP_FACEPLAYER = 0x5A
+_OP_WAITMESSAGE = 0x66        # waitmessage: block until the message box finishes printing
+_OP_CLOSEMESSAGE = 0x68
 _OP_LOCK = 0x6A
 _OP_RELEASE = 0x6C
+_OP_WAITBUTTONPRESS = 0x6D
+_OP_CREATEVOBJECT = 0xAA       # createvobject <gfx:u8> <id:u8> <x:u16> <y:u16> <elev:u8> <dir:u8>
+_OP_SETWILDBATTLE = 0xB6       # setwildbattle <species:u16> <level:u8> <held_item:u16> -> CreateScriptedWildMon
+_OP_DOWILDBATTLE = 0xB7        # dowildbattle: StartScriptedWildBattle + ScriptContext_Stop; resumes after battle
+_OP_SETVADDRESS = 0xB8         # setvaddress <ptr:u32>: RAM-script relocation base for the v* commands
+_OP_VGOTO_IF = 0xBB            # vgoto_if <condition:u8> <dest:u32>: goto_if via the setvaddress base
+_OP_VMESSAGE = 0xBD            # vmessage <text:u32>: message using the setvaddress-relative address
+
+_CONDITION_EQ = 1              # sScriptConditionTable row "=" (jump when comparisonResult == equal)
+_CONDITION_LT = 0              # sScriptConditionTable row "<"
+VAR_ALTERING_CAVE_WILD_SET = 0x4024  # selects the Altering Cave encounter header [vars.h:71]
+NUM_ALTERING_CAVE_TABLES = 9   # base Zubat table plus the eight event species tables
+_VAR_STARTER_MON = 0x4031      # [include/constants/vars.h:98] 0:Bulbasaur 1:Squirtle 2:Charmander
+_VAR_PLAYER_X = 0x8004          # scratch vars for the player's live coordinates (getplayerxy)
+_VAR_PLAYER_Y = 0x8005
+_VAR_FAR_X = 0x8006             # scratch: player's x + far_offset, for the first (right-side) Raikou
 
 _VAR_0x8000 = 0x8000           # giveitem: item id
 _VAR_0x8001 = 0x8001           # giveitem: amount
@@ -135,6 +183,220 @@ def build_berry_gift():
     script = build_delivery_ram_script(items=(ITEM_LANSAT_BERRY, ITEM_LIECHI_BERRY),
                                        flag_id=flag_id)
     return card, script
+
+
+def build_battle_delivery_script(pre_items=(ITEM_LANSAT_BERRY,), species=SPECIES_RAIKOU,
+                                 level=65, held_item=ITEM_NONE, post_items=(ITEM_LIECHI_BERRY,),
+                                 one_shot=False):
+    """Deliveryman script: hand over `pre_items`, start a scripted WILD battle vs `species` at
+    `level`, then hand over `post_items` after the battle ends. `dowildbattle` stops the script
+    and the engine resumes it right after the battle [scrcmd.c ScrCmd_dowildbattle], so the
+    post-battle gift is given whether the player wins, runs, or catches the mon. This script is
+    linear (no branches), so no setvaddress/relocation is needed. Ends with `end`
+    (one_shot=False, default: repeatable every time you talk to the deliveryman) or `endram`
+    (one_shot=True: the RAM script is cleared, so the gift retires after one delivery)."""
+    def give(items):
+        out = b""
+        for it in items:
+            out += _setorcopyvar(_VAR_0x8000, it) + _setorcopyvar(_VAR_0x8001, 1) \
+                + bytes([_OP_CALLSTD, _STD_OBTAIN_ITEM])
+        return out
+    return bytes([_OP_LOCK, _OP_FACEPLAYER]) \
+        + give(pre_items) \
+        + bytes([_OP_SETWILDBATTLE]) + _u16(species) + bytes([level & 0xFF]) + _u16(held_item) \
+        + bytes([_OP_DOWILDBATTLE]) \
+        + give(post_items) \
+        + bytes([_OP_RELEASE, _OP_ENDRAM if one_shot else _OP_END])
+
+
+def build_raikou_battle_gift(level=65):
+    """The battle payload: a Wonder Card + deliveryman script that gives a Lansat Berry, starts a
+    wild RAIKOU battle at `level`, then gives a Liechi Berry. Returns (card_bytes_332, ram_script)."""
+    flag_id = 1003
+    card = build_wonder_card(
+        flag_id=flag_id, icon_species=SPECIES_RAIKOU, id_number=0x5241494B,  # "RAIK"
+        title="A LEGENDARY GIFT", subtitle="A special gift and a beastly surprise!",
+        body=("A Lansat Berry, A Liechi Berry", "and then, what else is in store?"),
+        footer1=" - MercuryEnigma")
+    script = build_battle_delivery_script(species=SPECIES_RAIKOU, level=level)
+    return card, script
+
+
+# Text control codes [pokefirered charmap.txt]: {PLAYER}=FD 01 (player name), {NL}=FE (newline),
+# {P}=FB (new paragraph: wait for A, clear the box), {SCROLL}=FA. Messages terminate with FF.
+_MSG_TOKENS = {"PLAYER": b"\xFD\x01", "NL": b"\xFE", "P": b"\xFB", "SCROLL": b"\xFA"}
+
+
+def _encode_message(text):
+    """Encode a deliveryman message to FRLG text bytes (0xFF-terminated). `{...}` tokens expand
+    per _MSG_TOKENS (e.g. {PLAYER}, {NL}, {P}); everything else goes through the game charset
+    (charmap.encode). Unknown glyphs are dropped by charmap."""
+    out = bytearray()
+    i = 0
+    while i < len(text):
+        if text[i] == "{":
+            j = text.index("}", i)
+            tok = text[i + 1:j]
+            if tok not in _MSG_TOKENS:
+                raise ValueError(f"unknown message token {{{tok}}}")
+            out += _MSG_TOKENS[tok]
+            i = j + 1
+        else:
+            out += charmap.encode(text[i])
+            i += 1
+    return bytes(out) + b"\xFF"
+
+
+def build_altering_cave_script():
+    """Repeatable deliveryman script implementing
+    ``VAR_ALTERING_CAVE_WILD_SET = (value + 1) % NUM_ALTERING_CAVE_TABLES``.
+
+    The nine encounter headers are indexed 0..8. The script uses virtual addresses for its branch
+    and embedded message, then ends with ``end`` so it remains installed for the next interaction.
+    It deliberately does not set the Wonder Card receipt flag or use ``endram``.
+    """
+    message = _encode_message(
+        "Thank you for using the{NL}MYSTERY GIFT system.{P}"
+        "The wild POKEMON in{NL}ALTERING CAVE have changed!"
+    )
+
+    code = bytearray(bytes([_OP_SETVADDRESS]) + b"\x00\x00\x00\x00")
+    code += bytes([_OP_ADDVAR]) + _u16(VAR_ALTERING_CAVE_WILD_SET) + _u16(1)
+    code += bytes([_OP_COMPARE_VAR_TO_VALUE]) + _u16(VAR_ALTERING_CAVE_WILD_SET) \
+        + _u16(NUM_ALTERING_CAVE_TABLES)
+    code += bytes([_OP_VGOTO_IF, _CONDITION_LT])
+    notify_fixup = len(code)
+    code += b"\x00\x00\x00\x00"
+    code += bytes([_OP_SETVAR]) + _u16(VAR_ALTERING_CAVE_WILD_SET) + _u16(0)
+
+    notify_offset = len(code)
+    code += bytes([_OP_LOCK, _OP_FACEPLAYER, _OP_VMESSAGE])
+    message_fixup = len(code)
+    code += b"\x00\x00\x00\x00"
+    code += bytes([_OP_WAITMESSAGE, _OP_WAITBUTTONPRESS, _OP_RELEASE, _OP_END])
+
+    message_offset = len(code)
+    code[notify_fixup:notify_fixup + 4] = notify_offset.to_bytes(4, "little")
+    code[message_fixup:message_fixup + 4] = message_offset.to_bytes(4, "little")
+    return bytes(code) + message
+
+
+def build_altering_cave_gift():
+    """Wonder Card + persistent deliveryman script that cycles Altering Cave's wild Pokemon."""
+    card = build_wonder_card(
+        flag_id=1003, icon_species=41, id_number=0x43415645,  # "CAVE", Zubat icon
+        title="ALTERING CAVE", subtitle="The rumors have changed!",
+        body=("Talk to the delivery man", "to alter the cave again."),
+        footer1="frlg-ldn-trade")
+    return card, build_altering_cave_script()
+
+
+def build_raikou_cutscene_script(level=65, delay_frames=30, one_shot=False):
+    """A more "official" cutscene deliveryman script that ENDS with the battle, where the
+    legendary beast is chosen by the player's STARTER (VAR_STARTER_MON):
+        Bulbasaur -> Suicune,  Squirtle -> Entei,  Charmander -> Raikou.
+
+      1. "Thank you for using the MYSTERY GIFT system."
+      2. "You must be {PLAYER}. There is something here for you."
+      3. give a Lansat Berry
+      4. give a Liechi Berry
+      5. the matching beast sprite appears right beside the player (createvobject), facing them
+      6. "What is that? It looks like a Legendary Beast! Here, take this."
+      7. give a MASTER BALL
+      8. release, then a wild battle vs the matching beast (setwildbattle + dowildbattle) as finale
+
+    createvobject's graphicsId and setwildbattle's species are immediate operands (not vars), so
+    the beast can't be chosen with a variable -- we branch with `compare VAR_STARTER_MON` +
+    `vgoto_if` into one of three self-contained blocks (each ends with `end`, so no fallthrough).
+    Charmander (2) is the fallthrough default. Branch targets are relocation-safe: with
+    `setvaddress` base 0, a vgoto_if/vmessage operand is just the byte offset of its label/text.
+
+    All gifts are handed over BEFORE the battle on purpose: doing anything *after* a battle from
+    the deliveryman's RAM script is unreliable -- catching the mon re-inits the field script
+    context, so execution falls through to `gRamScriptRetAddr` (the cable-club colosseum code) and
+    the player gets warped. So the battle is the last thing each block does; we `release` first so
+    the player is free no matter how the battle ends. Message 2 uses {PLAYER} (FD 01), expanded to
+    the trainer name at render time. Ends with `end` (repeatable) or `endram` (one_shot)."""
+    msgs = [
+        _encode_message("Thank you for using the{NL}MYSTERY GIFT system."),
+        _encode_message("You must be {PLAYER}!{P}There is something here{NL}for you."),
+        _encode_message("What is that? It looks{NL}like a Legendary Beast!{P}Here, take this."),
+    ]
+
+    def giveitem(item):
+        return _setorcopyvar(_VAR_0x8000, item) + _setorcopyvar(_VAR_0x8001, 1) \
+            + bytes([_OP_CALLSTD, _STD_OBTAIN_ITEM])
+
+    code = bytearray()
+    vmessage_fixups = []                                       # (operand_pos, msg_index)
+    branch_fixups = []                                         # (operand_pos, label_name)
+    labels = {}
+
+    def vmessage(idx):
+        code.append(_OP_VMESSAGE)
+        vmessage_fixups.append((len(code), idx))
+        code.extend(b"\x00\x00\x00\x00")
+        code.extend(bytes([_OP_WAITMESSAGE, _OP_WAITBUTTONPRESS, _OP_CLOSEMESSAGE]))
+
+    def vgoto_if_starter(value, label_name):                  # if VAR_STARTER_MON == value: goto label
+        code.extend(bytes([_OP_COMPARE_VAR_TO_VALUE]) + _u16(_VAR_STARTER_MON) + _u16(value))
+        code.extend(bytes([_OP_VGOTO_IF, _CONDITION_EQ]))
+        branch_fixups.append((len(code), label_name))
+        code.extend(b"\x00\x00\x00\x00")
+
+    def beast_block(species, gfx):
+        # legendary appears beside the player (x=playerX+1, y=playerY, facing west toward them)
+        code.extend(bytes([_OP_CREATEVOBJECT, gfx & 0xFF, 0]) + _u16(_VAR_PLAYER_X)
+                    + _u16(_VAR_PLAYER_Y) + bytes([3, DIR_WEST]))
+        code.extend(bytes([_OP_DELAY]) + _u16(delay_frames))
+        vmessage(2)                                            # "What is that? ... take this."
+        code.extend(giveitem(ITEM_MASTER_BALL))
+        code.extend(bytes([_OP_RELEASE]))                      # free the player before the battle
+        code.extend(bytes([_OP_SETWILDBATTLE]) + _u16(species) + bytes([level & 0xFF]) + _u16(ITEM_NONE))
+        code.extend(bytes([_OP_DOWILDBATTLE]))                 # the wild battle is the finale
+        code.extend(bytes([_OP_ENDRAM if one_shot else _OP_END]))
+
+    code += bytes([_OP_SETVADDRESS]) + b"\x00\x00\x00\x00"     # setvaddress 0 (virtual base)
+    code += bytes([_OP_LOCK, _OP_FACEPLAYER])
+    vmessage(0)                                                # 1: "Thank you for using..."
+    vmessage(1)                                                # 2: "You must be {PLAYER}..."
+    code += giveitem(ITEM_LANSAT_BERRY)                        # 3: Lansat Berry
+    code += giveitem(ITEM_LIECHI_BERRY)                       # 4: Liechi Berry
+    code += bytes([_OP_GETPLAYERXY]) + _u16(_VAR_PLAYER_X) + _u16(_VAR_PLAYER_Y)
+    code += bytes([_OP_ADDVAR]) + _u16(_VAR_PLAYER_X) + _u16(1)   # one tile to the player's right (east)
+
+    # 5-8, chosen by starter. Charmander (VAR_STARTER_MON == 2) is the fallthrough default.
+    vgoto_if_starter(0, "suicune")                            # Bulbasaur -> Suicune
+    vgoto_if_starter(1, "entei")                              # Squirtle  -> Entei
+    beast_block(*STARTER_BEASTS[2])                            # Charmander-> Raikou (default)
+    labels["suicune"] = len(code); beast_block(*STARTER_BEASTS[0])
+    labels["entei"] = len(code); beast_block(*STARTER_BEASTS[1])
+
+    # Patch message offsets (text sits right after the code) and branch targets (label offsets);
+    # with virtual base 0 each operand is simply the absolute byte offset within the script.
+    code_len = len(code)
+    offsets, at = [], code_len
+    for m in msgs:
+        offsets.append(at)
+        at += len(m)
+    for pos, idx in vmessage_fixups:
+        code[pos:pos + 4] = (offsets[idx] & 0xFFFFFFFF).to_bytes(4, "little")
+    for pos, name in branch_fixups:
+        code[pos:pos + 4] = (labels[name] & 0xFFFFFFFF).to_bytes(4, "little")
+    return bytes(code) + b"".join(msgs)
+
+
+def build_raikou_cutscene_gift(level=65):
+    """Wonder Card + the "official" cutscene deliveryman script. Gives two berries + a Master Ball
+    and ends in a wild battle vs the legendary beast matching the player's starter (Bulbasaur ->
+    Suicune, Squirtle -> Entei, Charmander -> Raikou). Returns (card_bytes_332, ram_script_bytes)."""
+    flag_id = 1003
+    card = build_wonder_card(
+        flag_id=flag_id, icon_species=SPECIES_CLAYDOL, id_number=0x42454153,  # "BEAS"
+        title="LEGENDARY BEAST", subtitle="A shocking encounter!",
+        body=("Meet the delivery man for", "berries and a beastly battle!"),
+        footer1="frlg-ldn-trade")
+    return card, build_raikou_cutscene_script(level=level)
 
 
 def _selftest():
