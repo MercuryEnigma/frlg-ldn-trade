@@ -30,8 +30,21 @@ Byte layouts (verified against the repo's official AURORA/MYSTIC tickets):
 import os
 
 from .mystery_gift import crc16
-from .wonder_card import build_berry_gift, WONDER_CARD_SIZE
+from .wonder_card import (
+    build_altering_cave_gift, build_berry_gift, build_raikou_battle_gift,
+    build_raikou_cutscene_gift, WONDER_CARD_SIZE,
+)
 from .save_inject import build_ram_script_struct, RAM_SCRIPT_DATA_SIZE
+
+# --- selectable gift payloads (--gift) -------------------------------------------------------
+GIFTS = {
+    "altering-cave": (build_altering_cave_gift, "ALTERINGCAVE_FRLG"),  # repeatable cave table cycle
+    "berry": (build_berry_gift, "LANSAT_LIECHI_BERRY_GIFT_FRLG"),      # Lansat + Liechi berries
+    "raikou": (build_raikou_battle_gift, "RAIKOU_BATTLE_GIFT_FRLG"),   # Lansat, wild Raikou, Liechi
+    # NOTE: the injector's display label is only the FIRST underscore-token (title-cased), so the
+    # name's first word is what shows in the dropdown; keep it distinct from the other tickets.
+    "beast-cutscene": (build_raikou_cutscene_gift, "BEASTCUTSCENE_FRLG"),  # -> "Beastcutscene - FRLG"
+}
 
 # --- tool .bin geometry (WONDERCARD_STRUCTURE.md) --------------------------------------------
 BIN_HEADER_SIZE = 4                                    # u16 crc + u16 pad
@@ -81,14 +94,19 @@ def _main(argv=None):
     ap = argparse.ArgumentParser(
         description="Export the Mystery Gift payload as the WonderCard/Script .bin pair for "
                     "comradesean's pokemon-gen3-mysterygift-tool")
+    ap.add_argument("-g", "--gift", choices=sorted(GIFTS), default="berry",
+                    help="which gift payload to export (default: berry)")
     ap.add_argument("-o", "--out-dir", default=".",
                     help="directory to write the .bin pair into (default: cwd)")
-    ap.add_argument("-n", "--name", default="LANSAT_LIECHI_BERRY_GIFT_FRLG",
-                    help="ticket base name; files are <name>_WonderCard.bin / <name>_Script.bin")
+    ap.add_argument("-n", "--name", default=None,
+                    help="ticket base name (default: per-gift); files are "
+                         "<name>_WonderCard.bin / <name>_Script.bin")
     args = ap.parse_args(argv)
 
-    card, script = build_berry_gift()
-    wc_path, sc_path = write_gift_bins(args.out_dir, args.name, card, script)
+    build, default_name = GIFTS[args.gift]
+    name = args.name or default_name
+    card, script = build()
+    wc_path, sc_path = write_gift_bins(args.out_dir, name, card, script)
     print(f"wrote {wc_path} ({WONDER_CARD_BIN_SIZE} B: cardCrc=0x{crc16(card):04X})")
     _, ram_crc = build_ram_script_struct(script)
     print(f"wrote {sc_path} ({SCRIPT_BIN_SIZE} B: ramCrc=0x{ram_crc:04X}, "
