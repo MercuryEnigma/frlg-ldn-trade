@@ -283,13 +283,13 @@ WORLDS_XP_GIFT = WonderGift(
         title="FANtastic Mystery Gift - WORLDS 26",
         subtitle="A Legendary Experience!",
         body=(
-            "An EGG of ruins is waiting. Talk to the",
-            "PokeCenter 2nd floor deliveryman to see",
+            "A rare EGG is waiting. Talk to the",
+            "PokéCenter 2nd floor deliveryman to see",
             "why it is attracting a LEGENDARY aura.",
             "We hope you enjoy this fan-made event!",
         ),
         footer1=" - MercuryEnigma.github.io/pkcamp",
-        footer2="NOTE. not official use at your own risk",
+        footer2="--Not official. Use at your own risk.--",
         default_flag_id=WORLDS_XP_GIFT_FLAG_ID,
     ),
     intro_message=(
@@ -330,7 +330,7 @@ WORLDS_XP_GIFT = WonderGift(
                 ),
             ),
             Message("This egg has the power of\n"
-                    "3 beasts from a time of calamity."),
+                    "3 beasts from sacred legends."),
         ),
         DeliveryStage(
             ShowSprite(
