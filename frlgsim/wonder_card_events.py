@@ -278,13 +278,14 @@ WORLDS_XP_GIFT = WonderGift(
     slug=GIFT_WORLDS_XP,
     card=WonderCardSpec(
         icon_species=SPECIES_CLAYDOL,
-        bg_type=1,
+        bg_type=4,
+        id_number=0,
         title="FANtastic Mystery Gift - WORLDS 26",
         subtitle="A Legendary Experience!",
         body=(
             "An EGG of ruins is waiting. Talk to the",
-            "deliveryman to see why it is attracting",
-            "a LEGENDARY aura.",
+            "PokeCenter 2nd floor deliveryman to see",
+            "why it is attracting a LEGENDARY aura.",
             "We hope you enjoy this fan-made event!",
         ),
         footer1=" - MercuryEnigma.github.io/pkcamp",
@@ -329,7 +330,7 @@ WORLDS_XP_GIFT = WonderGift(
                 ),
             ),
             Message("This egg has the power of\n"
-                    "3 beasts from a time of ruins."),
+                    "3 beasts from a time of calamity."),
         ),
         DeliveryStage(
             ShowSprite(
