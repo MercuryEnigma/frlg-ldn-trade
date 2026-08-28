@@ -28,7 +28,7 @@ def _raises(callable_, text):
 def test_tracked_host_profile_is_the_tp_link_live_default():
     loaded = config.load_project_host_file_config()
     assert loaded.live is True
-    assert loaded.adapter == "tplink-archer-t3u"
+    assert loaded.adapter == "mt7601u"
     assert loaded.skip_encryption is True
     assert loaded.accept_decrypted_ccmp is False
     assert loaded.native_nonce_sequence is True

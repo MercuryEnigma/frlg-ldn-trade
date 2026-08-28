@@ -61,7 +61,7 @@ def test_mystery_gift_no_flag_profile_and_cli_boolean_overrides_are_effective():
     run = frlgmg_host.build_run_config(parser, args)
     assert args.live is True
     assert run.role.skip_encryption is True
-    assert run.role.accept_decrypted_ccmp is True
+    assert run.role.accept_decrypted_ccmp is False
 
     args = parser.parse_args([
         "--no-live", "--no-skip-encryption", "--no-accept-decrypted-ccmp"])
@@ -78,7 +78,7 @@ def test_print_effective_config_is_safe_and_requires_no_root_or_party_files():
     rendered = output.getvalue()
     assert "live = true" in rendered
     assert "skip_encryption = true" in rendered
-    assert "accept_decrypted_ccmp = true" in rendered
+    assert "accept_decrypted_ccmp = false" in rendered
     assert 'keys_path = "<redacted>"' in rendered
     assert 'password = "<redacted>"' in rendered
     assert "/private/pi/prod.keys" not in rendered
@@ -86,7 +86,7 @@ def test_print_effective_config_is_safe_and_requires_no_root_or_party_files():
     output = io.StringIO()
     with redirect_stdout(output):
         assert frlgtrade_host.main(["--print-effective-config"]) == 0
-    assert "adapter = \"tplink-archer-t3u\"" in output.getvalue()
+    assert "adapter = \"mt7601u\"" in output.getvalue()
 
 
 def test_print_effective_config_validates_transport_options():

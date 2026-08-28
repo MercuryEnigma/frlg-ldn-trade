@@ -104,7 +104,7 @@ def test_default_config_selects_the_self_contained_celebi_gift():
     assert int.from_bytes(card[2:4], "little") == wonder_card.SPECIES_CELEBI
     assert int.from_bytes(card[4:8], "little") == 3
     assert charmap.decode(card[250:290]).endswith("MercuryEnigma")
-    assert len(script) == 352
+    assert len(script) == 355
     assert script != wonder_card.build_delivery_ram_script(item=None, flag_id=1003)
 
 

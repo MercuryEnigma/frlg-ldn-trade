@@ -628,6 +628,15 @@ HOST_ADAPTER_PROFILES = {
         "driver": "rtw88_8822bu",
         "usb_id": "2357:012d",
     },
+    # The AP-mode MT7601U dongle. Only this adapter binds the out-of-tree
+    # ``mt7601u`` driver (the Pi's built-in radio is ``brcmfmac``), so a
+    # driver-only match is unambiguous and survives USB re-enumeration without
+    # pinning a phy number. usb_id=None means "match on driver alone".
+    "mt7601u": {
+        "label": "MediaTek MT7601U",
+        "driver": "mt7601u",
+        "usb_id": None,
+    },
 }
 
 
@@ -680,12 +689,13 @@ def find_adapter_phy(adapter, log=print):
             f"unknown Wi-Fi adapter profile {adapter!r}; choose one of: {choices}")
     matches = [
         phy for phy, driver, usb_id in describe_phys()
-        if driver == profile["driver"] and usb_id == profile["usb_id"]
+        if driver == profile["driver"]
+        and (profile["usb_id"] is None or usb_id == profile["usb_id"])
     ]
     if len(matches) == 1:
         phy = matches[0]
         log(f"[host] adapter {adapter} -> {phy} "
-            f"({profile['driver']}, USB {profile['usb_id']})")
+            f"({profile['driver']}, USB {profile['usb_id'] or 'any'})")
         return phy
     visible = ", ".join(
         f"{phy} ({driver}, USB {usb_id or '?'})"
@@ -693,7 +703,7 @@ def find_adapter_phy(adapter, log=print):
     if not matches:
         raise RuntimeError(
             f"adapter {profile['label']} was not found "
-            f"(need {profile['driver']}, USB {profile['usb_id']}); "
+            f"(need {profile['driver']}, USB {profile['usb_id'] or 'any'}); "
             f"visible PHYs: {visible}. Pass --phy phyN to select a PHY explicitly.")
     raise RuntimeError(
         f"adapter {profile['label']} is ambiguous ({', '.join(matches)}); "

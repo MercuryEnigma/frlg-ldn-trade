@@ -5,16 +5,19 @@
 # precedence.  See docs/raspberry_pi.md for the normal Pi workflow.
 
 [host]
-# The proven TP-Link Archer T3U / AC1300 (rtw88_8822bu) profile.
+# AP-mode MediaTek MT7601U dongle. With phy = "auto" the adapter is resolved by
+# driver (unambiguous: the Pi's built-in radio is brcmfmac), so it survives USB
+# re-enumeration. Set adapter = "tplink-archer-t3u" instead for that dongle.
 live = true
-adapter = "tplink-archer-t3u"
+adapter = "mt7601u"
 trust_pia = true
 channel = 1
 max_participants = 6
 skip_preflight = false
 # Delegate outgoing CCMP to mac80211/hardware; over-air traffic remains encrypted.
 skip_encryption = true
-# Normalize this driver's decrypted monitor RX frames that retain CCMP metadata.
+# The mt7601u delivers standard CCMP receive frames, so no normalization is
+# needed (set true only for rtw88_8822bu / TP-Link, which retains CCMP metadata).
 accept_decrypted_ccmp = false
 native_nonce_sequence = true
 session_response_first = true

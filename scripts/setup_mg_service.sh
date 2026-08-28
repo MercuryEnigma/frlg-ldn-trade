@@ -23,10 +23,9 @@ chmod +x "${RUNNER}"
 echo "Installing ${SERVICE_NAME} service using project directory:"
 echo "  ${PROJECT_DIR}"
 
-# Unquoted heredoc so ${PROJECT_DIR}/${RUNNER} expand now; every runtime shell
-# token inside ExecStartPre is \$-escaped so systemd receives them literally and
-# evaluates them at start time (wait up to 60s for an AP-capable Wi-Fi phy;
-# --phy is omitted so the host auto-selects it).
+# Unquoted heredoc so ${PROJECT_DIR}/${RUNNER} expand now. The pre-start wait
+# lives in its own script so systemd's Exec parser never sees inline shell
+# escapes; --phy is omitted so the host auto-selects the adapter's phy.
 sudo tee "${SERVICE_FILE}" >/dev/null <<EOF
 [Unit]
 Description=FR-LDN Mystery Gift Host
@@ -36,7 +35,8 @@ After=network.target
 Type=simple
 WorkingDirectory=${PROJECT_DIR}
 
-ExecStartPre=/bin/sh -c 'for _ in \$(seq 1 60); do for p in /sys/class/ieee80211/phy*; do [ -e "\$p" ] && iw phy "\$(basename "\$p")" info 2>/dev/null | grep -q "\* AP\$" && exit 0; done; sleep 1; done; exit 1'
+# Wait up to 60s for the USB Wi-Fi adapter (an AP-capable phy) to enumerate.
+ExecStartPre=${PROJECT_DIR}/scripts/wait_for_ap_phy.sh 60
 
 ExecStart=${RUNNER} --gift worlds-xp
 

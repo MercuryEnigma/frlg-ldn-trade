@@ -101,16 +101,9 @@ if [[ -n "$CONFIG_VALUES" ]]; then
         fail "host profile requires live=true and skip_encryption=true"
     fi
     if [[ "$USE_EXPLICIT_PHY" == false ]]; then
-        if [[ "$ACCEPT_DECRYPTED_CCMP" != true ]]; then
-            fail "TP-Link profile requires accept_decrypted_ccmp=true"
-        else
-            pass "TP-Link retained-CCMP receive normalization is enabled"
-        fi
-        if [[ "$ADAPTER" != "tplink-archer-t3u" ]]; then
-            fail "adapter is $ADAPTER; expected tplink-archer-t3u when phy is auto"
-        else
-            pass "configured TP-Link Archer T3U profile"
-        fi
+        # The adapter's phy is resolved by driver below; per-driver CCMP rules
+        # are validated there, so no adapter-specific assertion is needed here.
+        pass "resolving host phy automatically from adapter profile '$ADAPTER'"
     else
         pass "configured explicit host phy $CONFIG_PHY (named adapter is bypassed)"
     fi
@@ -120,22 +113,29 @@ else
     CONFIG_PHY="auto"
 fi
 
-find_tplink_phy() {
-    local phy_dir current vendor product
+# Mirror transport.HOST_ADAPTER_PROFILES: map an adapter profile name to the
+# kernel driver that identifies it. Empty for an unknown profile.
+adapter_driver() {
+    case "$1" in
+        mt7601u) echo "mt7601u" ;;
+        tplink-archer-t3u) echo "rtw88_8822bu" ;;
+        *) echo "" ;;
+    esac
+}
+
+# First phy currently bound to the given driver (survives phy renumbering).
+find_phy_by_driver() {
+    local want=$1 phy_dir phy drv
     for phy_dir in /sys/class/ieee80211/phy*; do
-        [[ -e "$phy_dir/device" ]] || continue
-        current=$(readlink -f "$phy_dir/device")
-        while [[ "$current" != / && -n "$current" ]]; do
-            if [[ -r "$current/idVendor" && -r "$current/idProduct" ]]; then
-                vendor=$(<"$current/idVendor")
-                product=$(<"$current/idProduct")
-                if [[ "$vendor:$product" == "2357:012d" ]]; then
-                    basename "$phy_dir"
-                    return 0
-                fi
-            fi
-            current=$(dirname "$current")
-        done
+        [[ -e "$phy_dir" ]] || continue
+        phy=$(basename "$phy_dir")
+        drv=""
+        [[ -L "$phy_dir/device/driver" ]] \
+            && drv=$(basename "$(readlink -f "$phy_dir/device/driver")")
+        if [[ "$drv" == "$want" ]]; then
+            echo "$phy"
+            return 0
+        fi
     done
     return 1
 }
@@ -159,78 +159,79 @@ check_phy_modes() {
     fi
 }
 
+# Validate a chosen phy's driver-specific CCMP rule and its AP/monitor modes.
+validate_selected_phy() {
+    local phy=$1 driver_link driver module_path
+    driver_link="/sys/class/ieee80211/$phy/device/driver"
+    driver=""
+    [[ -L "$driver_link" ]] && driver=$(basename "$(readlink -f "$driver_link")")
+    pass "selected phy is $phy (${driver:-unknown} driver)"
+    case "$driver" in
+        mt76x0u)
+            if [[ "$ACCEPT_DECRYPTED_CCMP" == false ]]; then
+                pass "mt76x0u uses standard CCMP receive frames"
+            else
+                fail "mt76x0u requires accept_decrypted_ccmp=false"
+            fi
+            ;;
+        mt7601u)
+            if [[ "$ACCEPT_DECRYPTED_CCMP" == false ]]; then
+                pass "mt7601u uses standard CCMP receive frames"
+            else
+                fail "mt7601u requires accept_decrypted_ccmp=false"
+            fi
+            module_path=$(modinfo -k "$(uname -r)" -n mt7601u 2>/dev/null || true)
+            if [[ "$module_path" == */updates/dkms/mt7601u.ko* ]]; then
+                pass "mt7601u AP-mode DKMS module is installed"
+            else
+                fail "mt7601u stock module is active; install the AP-mode driver with scripts/setup_pi.sh --install-mt7601u-ap"
+            fi
+            ;;
+        rtw88_8822bu)
+            if [[ "$ACCEPT_DECRYPTED_CCMP" == true ]]; then
+                pass "rtw88_8822bu retained-CCMP receive normalization is enabled"
+            else
+                fail "rtw88_8822bu requires accept_decrypted_ccmp=true"
+            fi
+            ;;
+        *)
+            pass "selected phy has no built-in CCMP receive profile"
+            ;;
+    esac
+    check_phy_modes "$phy" "selected phy $phy"
+}
+
+SELECTED_PHY=""
 if [[ "$USE_EXPLICIT_PHY" == true ]]; then
     SELECTED_PHY=$CONFIG_PHY
     if [[ ! -d "/sys/class/ieee80211/$SELECTED_PHY" ]]; then
         fail "configured phy $SELECTED_PHY does not exist"
-    else
-        DRIVER_LINK="/sys/class/ieee80211/$SELECTED_PHY/device/driver"
-        DRIVER=""
-        [[ -L "$DRIVER_LINK" ]] && DRIVER=$(basename "$(readlink -f "$DRIVER_LINK")")
-        pass "selected phy is $SELECTED_PHY (${DRIVER:-unknown} driver)"
-        case "$DRIVER" in
-            mt76x0u)
-                if [[ "$ACCEPT_DECRYPTED_CCMP" == false ]]; then
-                    pass "mt76x0u uses standard CCMP receive frames"
-                else
-                    fail "mt76x0u requires accept_decrypted_ccmp=false"
-                fi
-                ;;
-            mt7601u)
-                if [[ "$ACCEPT_DECRYPTED_CCMP" == false ]]; then
-                    pass "mt7601u uses standard CCMP receive frames"
-                else
-                    fail "mt7601u requires accept_decrypted_ccmp=false"
-                fi
-                MODULE_PATH=$(modinfo -k "$(uname -r)" -n mt7601u 2>/dev/null || true)
-                if [[ "$MODULE_PATH" == */updates/dkms/mt7601u.ko* ]]; then
-                    pass "mt7601u AP-mode DKMS module is installed"
-                else
-                    fail "mt7601u stock module is active; install the AP-mode driver with scripts/setup_pi.sh --install-mt7601u-ap"
-                fi
-                ;;
-            rtw88_8822bu)
-                if [[ "$ACCEPT_DECRYPTED_CCMP" == true ]]; then
-                    pass "rtw88_8822bu retained-CCMP receive normalization is enabled"
-                else
-                    fail "rtw88_8822bu requires accept_decrypted_ccmp=true"
-                fi
-                ;;
-            *)
-                pass "selected phy has no built-in CCMP receive profile"
-                ;;
-        esac
-        check_phy_modes "$SELECTED_PHY" "selected phy $SELECTED_PHY"
+        SELECTED_PHY=""
     fi
 else
-    if command -v lsusb >/dev/null 2>&1 && lsusb -d 2357:012d >/dev/null; then
-        pass "TP-Link USB 2357:012d is attached"
+    WANT_DRIVER=$(adapter_driver "$ADAPTER")
+    if [[ -z "$WANT_DRIVER" ]]; then
+        fail "unknown adapter profile '$ADAPTER'; set [host].adapter to mt7601u or tplink-archer-t3u"
     else
-        fail "TP-Link Archer T3U (USB 2357:012d) is not attached"
-    fi
-
-    if command -v modinfo >/dev/null 2>&1 && modinfo rtw88_8822bu >/dev/null; then
-        pass "rtw88_8822bu kernel module is available"
-    else
-        fail "rtw88_8822bu kernel module is unavailable"
-    fi
-
-    TP_LINK_PHY=$(find_tplink_phy || true)
-    if [[ -z "$TP_LINK_PHY" ]]; then
-        fail "could not map USB 2357:012d to an ieee80211 phy"
-    fi
-    if [[ -n "$TP_LINK_PHY" ]]; then
-        pass "TP-Link is $TP_LINK_PHY"
-        DRIVER_LINK="/sys/class/ieee80211/$TP_LINK_PHY/device/driver"
-        DRIVER=""
-        [[ -L "$DRIVER_LINK" ]] && DRIVER=$(basename "$(readlink -f "$DRIVER_LINK")")
-        if [[ "$DRIVER" == "rtw88_8822bu" ]]; then
-            pass "TP-Link phy uses rtw88_8822bu"
+        SELECTED_PHY=$(find_phy_by_driver "$WANT_DRIVER" || true)
+        if [[ -z "$SELECTED_PHY" ]]; then
+            fail "no phy found for adapter '$ADAPTER' ($WANT_DRIVER driver); is the dongle attached?"
         else
-            fail "TP-Link phy driver is ${DRIVER:-unknown}; expected rtw88_8822bu"
+            pass "adapter '$ADAPTER' resolved to $SELECTED_PHY ($WANT_DRIVER driver)"
         fi
-        check_phy_modes "$TP_LINK_PHY" "TP-Link phy"
+        # The TP-Link is additionally identified by its exact USB id.
+        if [[ "$ADAPTER" == "tplink-archer-t3u" ]]; then
+            if command -v lsusb >/dev/null 2>&1 && lsusb -d 2357:012d >/dev/null; then
+                pass "TP-Link USB 2357:012d is attached"
+            else
+                fail "TP-Link Archer T3U (USB 2357:012d) is not attached"
+            fi
+        fi
     fi
+fi
+
+if [[ -n "$SELECTED_PHY" ]]; then
+    validate_selected_phy "$SELECTED_PHY"
 fi
 
 if [[ -n "$KEYS_PATH" ]]; then

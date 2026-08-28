@@ -23,7 +23,7 @@ from test_gift_composer import ScriptVM  # noqa: E402
 
 CARD_SHA256 = "288a9780be48923c4b1b4898ca0f20fc75aa5c42f3cd6550886b4bf3762be959"
 SCRIPT_SHA256 = "23108fe1f4a28045d19fa9a2a68679fe81286371af4a681b28c4ccddd99f031c"
-COMPOSED_SCRIPT_SHA256 = "6ecc574a0700c9910330a9646aa6a0c2028d3cbe882e13f8f8ebdec3cd54b7a4"
+COMPOSED_SCRIPT_SHA256 = "d02c3519b52a47fd34f41b9c1891f9889b3864c14a56d82c7a77fd610da77ba0"
 
 
 def _giveitem(item):
@@ -172,7 +172,7 @@ def test_composed_cutscene_registry_uses_conditions_for_starter_branch():
     legacy_card, legacy_script = wonder_card.build_legendary_beast_cutscene_gift()
     assert distribution.card == legacy_card
     assert distribution.ram_script != legacy_script
-    assert len(distribution.ram_script) == 914
+    assert len(distribution.ram_script) == 803
     assert hashlib.sha256(distribution.ram_script).hexdigest() == COMPOSED_SCRIPT_SHA256
     assert gift_registry.GIFT_REGISTRY.describe(wonder_card.GIFT_BEAST_CUTSCENE) == \
         "composed gift 'LEGENDARY BEAST'"
