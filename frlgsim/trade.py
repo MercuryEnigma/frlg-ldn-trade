@@ -1382,7 +1382,7 @@ class TradeEngine:
         # reference capture's guest emits count=0 (post-LinkPlayer) then count=1 (post-card), mutual barriers the host gates
         # on. We drive the count PHASE-wise (0 until the card is pulled, 1 after) rather than via the
         # shared barrier's auto-count, whose reactive mirror the host's repeated echoes would reset. The
-        # sim emits these one per VBlank (free-run); the host streams idle keepalives while it waits.
+        # sim emits these one per host poll; the host streams idle keepalives while it waits.
         if self.established and not self._host_in_seat:
             wcount = 0 if not self.entry.card_supplied else 1
             # BOUNDED burst (NOT a flood): emit the round's count up to WARP_STANDBY_EMITS NEW frames,

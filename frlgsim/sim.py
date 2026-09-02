@@ -54,9 +54,9 @@ RTX_GAP_LIMIT_NI = 2       # NI/seat phase: a slightly longer tail (a few critic
 #   MAX_INFLIGHT - the shared reliable send window. It must stay SMALL on this link: a larger window puts
 #     more frames in flight than the host's receive side tolerates, and it faults with an in-game
 #     Communication error (measured: both 18 and 128 fault shortly before the save; 6 is the ceiling and
-#     completes the trade). Emission is FREE-RUN (one datagram per VBlank, below) rather than paced to the
-#     host's poll arrivals, so in steady state in-flight self-limits well under the window - the window is
-#     the safety cap, not the pacer. (K_INFLIGHT_MAX reserves part of it for the critical 'T' so a K-ack
+#     completes the trade). Emission is credit-paced to the host's polls (T_CREDIT_MAX, below), so in
+#     steady state in-flight self-limits well under the window - the window is the safety cap, not the
+#     pacer. (K_INFLIGHT_MAX reserves part of it for the critical 'T' so a K-ack
 #     burst can never starve it.)
 #   RTT_JITTER_K - the RTO must cover the JITTER, not just the median, or every slow-but-not-lost frame in
 #     the 1s tail is retransmitted prematurely. rto() adds K * MAD(RTT) when this is > 0 (0 = console).
@@ -84,7 +84,7 @@ RTX_GAP_LIMIT_NI = 2       # NI/seat phase: a slightly longer tail (a few critic
 #     (win2-slow-entry: p50 104ms / 5% NACK). So bootstrap fixes connect WITHOUT slowing the trade.
 MAX_INFLIGHT = 6          # shared reliable window. Must stay SMALL on this bridge: a larger window lets us
                           # put more frames in flight than the host's receive side tolerates, and it faults
-                          # with an in-game Communication error. Re-confirmed on the clean free-run base: 18
+                          # with an in-game Communication error. Re-confirmed on the clean base: 18
                           # comms-errored shortly before the save, exactly like the earlier 128 - so 6 is the
                           # ceiling. (The ~2x retransmit seen at 6 is therefore NOT a window problem; it is the
                           # RTO firing before the host's ack returns - a separate, RTO-side lever.)
@@ -94,7 +94,7 @@ RTO_CEIL_MS = 670
 RTO_BACKOFF = 1.0
 RTO_BOOTSTRAP_MS = 200    # RTO while sampleless so the connect J/C retransmit until the host engages (NOT a floor)
 # K-ack pacing: the K-ack is the emulator's ack of a received host poll. _drive_reliable emits up to
-# K_PER_VBLANK new K-acks per VBlank (the free-run cadence), leaving window room for the 'T'. K_BACKLOG_MAX
+# K_PER_VBLANK new K-acks per VBlank, leaving window room for the 'T'. K_BACKLOG_MAX
 # bounds the pending-K list as a memory safety net (K is a monotonic ts ack; the host re-sends un-acked T,
 # so dropping the oldest deferred K is safe).
 K_BACKLOG_MAX = 32         # pending-K list cap (memory safety net)
@@ -105,6 +105,14 @@ K_BACKLOG_MAX = 32         # pending-K list cap (memory safety net)
 # the recv-NI ack the host waits on -> the NI handshake deadlocks (the latent hang).
 K_INFLIGHT_MAX = 3
 K_PER_VBLANK = 3           # max NEW K-acks queued per VBlank, leaving window slots for the per-VBlank 'T'
+# 'T' emission is CREDIT-PACED: one child slot per host poll (a host 'T' carrying a real slot), never
+# ahead of the host. The parent consumes our slots at its own poll rate through a shallow per-child
+# receive queue (8 entries, oldest dropped on overflow); a child that emits on its own clock runs ahead
+# of a host whose poll rate dips (menu transitions, the block handoff), the queue overflows, our slot
+# sequence arrives with holes and the parent faults the link. The console child is exactly 1:1 with the
+# host's polls in the trade and silent while the host idles. T_CREDIT_MAX bounds the unanswered polls we
+# may owe (host polls sometimes arrive two to a datagram) so a burst still cannot overrun the queue.
+T_CREDIT_MAX = 2
 ACK_PERIOD = 2             # delayed-ack interval: a standalone bulk-ack is owed at most every ~33ms (2
                            # VBlanks). The ack piggybacks on a data datagram whenever one is being sent this
                            # VBlank and goes out standalone only when one is owed (received data / a gap to
@@ -242,13 +250,9 @@ class Sim:
         self._connect_id = bytes(connect_id) if connect_id else None
         self._gba_conn_sent = False
         self._gba_accepted = False        # have we seen the host's emulator connect accept ('A')
-        # Emission is FREE-RUN: _drive_reliable emits one child slot ('T') per local VBlank, on our own
-        # clock, NOT paced to the host's slot arrivals. The flood the host's receive side can't absorb is
-        # bounded by the small send window (MAX_INFLIGHT), not by response pacing - so a steady one-per-
-        # VBlank cadence keeps few frames in flight and keeps the host's poll loop fed across the NI->UNI
-        # seam (a poll-paced child instead goes silent there and the host parks). _slot_credit still counts
-        # host slots delivered but not yet responded to, but the free-run path resets it each VBlank and
-        # does not gate emission on it (informational here).
+        # Emission is CREDIT-PACED (see T_CREDIT_MAX): _slot_credit counts host polls received and not yet
+        # answered; _drive_reliable emits at most one child slot ('T') per VBlank and only while a credit
+        # is owed, so we never run ahead of the host's poll rate.
         self._slot_credit = 0
         self._last_seat_emit = -100      # last tick we emitted a seat/leave held-keys (keepalive floor)
         self._seen_in = set()
@@ -415,11 +419,10 @@ class Sim:
         # send a UNI slot before the host itself is in UNI, which would fault its RFU link manager).
         if rec.get("llsf_state") == 4:
             self._host_uni_seen = True
-        # Count every host 'T' (NI sub-frame, NI ack, UNI, or idle keepalive) as one delivered host slot.
-        # _slot_credit tracks host slots delivered but not yet responded to; it is informational under the
-        # free-run send path (which emits one child slot per VBlank and resets the credit each time), kept
-        # so the counter stays meaningful if a poll-paced path is ever reintroduced.
-        self._slot_credit += 1
+        # Every host 'T' (NI sub-frame, NI ack, UNI poll, idle keepalive) earns one emission credit,
+        # capped at T_CREDIT_MAX: the console child answers the parent's polls one for one once the
+        # link is up, and its send-NI sub-frames ride the host's idle keepalive polls.
+        self._slot_credit = min(self._slot_credit + 1, T_CREDIT_MAX)
         # Feed the host's UNI slots (the mpId gRecvCmds) to the trade engine; the parse_in record's
         # `positional` alias is exactly what the engine reads. A host idle/NI 'T' has no
         # UNI slots, so feed_in_frame is a no-op for it (it still got K-acked + counted as a tick).
@@ -586,12 +589,11 @@ class Sim:
         rtx_limit = RTX_GAP_LIMIT if in_block_phase else RTX_GAP_LIMIT_NI   # never None
         for seq, flagsA, inner in self.rel.due_retransmits(now_ms, limit=rtx_limit)[:RELIABLE_BATCH_MAX]:
             batch.append((seq, flagsA, inner))
-        # FREE-RUN emission: emit ONE new 'T' slot per VBlank on our OWN clock (not gated on how many host
-        # polls arrived this tick), window-bounded, plus K-acks up to a small per-VBlank cap. _gba_frame()
-        # returns the phase-correct slot (NI sub-frame / block fragment / trade slot / idle keepalive) or
-        # None (recv-NI quiet / nothing to send), so one call per VBlank covers every phase. The flood guard
-        # is the send window (max_inflight) + the RTT-driven gap-targeted retransmit, not response pacing.
-        self._slot_credit = 0                         # consume any accumulated poll credits (unused here)
+        # CREDIT-PACED emission: emit at most ONE new 'T' slot per VBlank, and only while the host owes us
+        # a response (_slot_credit > 0, one per host poll received), window-bounded, plus K-acks up to a
+        # small per-VBlank cap. _gba_frame() returns the phase-correct slot (NI sub-frame / block fragment /
+        # trade slot / idle keepalive) or None (recv-NI quiet / nothing to send), so one call per VBlank
+        # covers every phase. A credit is consumed only when a slot is actually emitted.
         # 2. K-acks FIRST (wire order K-then-T): one per pending host ts, capped at K_PER_VBLANK and the K
         #    in-flight cap, leaving window slots for the 'T'. _k_seqs tracks our unacked K so a K burst can
         #    never starve the critical per-poll T (recv-NI ack / UNI slot).
@@ -611,14 +613,16 @@ class Sim:
             k_frames.append((seq, reliable.FLAGSA_GBA, kf))
             queued += 1
         self._pending_k = self._pending_k[queued:][-K_BACKLOG_MAX:]
-        # 3. our own 'T' slot - ONE per VBlank, ONLY after the host ACCEPTS our connect ('A'), window-bounded.
+        # 3. our own 'T' slot - at most ONE per VBlank, ONLY after the host ACCEPTS our connect ('A'),
+        #    window-bounded AND credit-gated (one per host poll).
         t_frames = []
         if self._gba_accepted:
-            _gated = self.rel.inflight() >= self.rel.max_inflight
+            _gated = self.rel.inflight() >= self.rel.max_inflight or self._slot_credit <= 0
             inner = None
             if not _gated:
                 inner = self._gba_frame()
                 if inner is not None:
+                    self._slot_credit -= 1
                     self._last_seat_emit = tick
                     seq = self.rel.queue(inner, reliable.FLAGSA_GBA, now_ms)
                     t_frames.append((seq, reliable.FLAGSA_GBA, inner))
@@ -634,7 +638,7 @@ class Sim:
         batch.extend(t_frames)
         if self._gba_accepted and self._dbg is not None:   # per-VBlank emission trace (debug-only)
             _snd = getattr(self.engine, "sender", None)
-            self._dbg.append({"tick": tick, "credits": 0, "kacks": queued,
+            self._dbg.append({"tick": tick, "credits": self._slot_credit, "kacks": queued,
                               "gba_emitted": len(t_frames), "inflight": self.rel.inflight(),
                               "sender": (_snd.state, _snd.index, _snd.count) if _snd else None})
         # 4. bulk-ack LAST (reference capture order K-T-A). Pure ack (FLAGSA_CTRL): carries recv_next (the contiguous gap)
@@ -680,7 +684,8 @@ class Sim:
         block/LINKCMD slot (we ask the engine first; held keys take an IDLE slot only).
 
         The ts (body[0:4]) is the per-NEW-frame u32 counter (+1 per new T; reused on retransmit, which
-        re-offers the already-built bytes). Single slot per frame, one frame per VBlank (free-run)."""
+        re-offers the already-built bytes). Single slot per frame, at most one frame per VBlank, one
+        per host poll (credit-paced)."""
         self._emitted_ni_ack = None      # cleared each call; set only when this call returns a recv-NI ack
         # NI handshake first (only while connected to the host's RFU, before steady UNI). The post-'A'
         # order is: our SEND-NI (game data) -> recv-NI (ack the host's own NI) -> UNI. We do NOT go UNI
