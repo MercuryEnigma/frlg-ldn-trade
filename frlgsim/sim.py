@@ -211,6 +211,14 @@ class Sim:
         # Session interleaved, risking host-side drop/reorder of our reliable frames -> under-ack ->
         # BufferIsFull. Each channel starts at 1 and skips 0 on rollover; establishing frames force 0.
         self._pktid_by_dst = {}
+        # Header nonce: a 64-bit COUNTER, not a random value. The host's packet reader keeps, per
+        # channel, the last accepted packet id and the last accepted header nonce (read big-endian) and
+        # DROPS any datagram whose nonce is not strictly ahead of the last accepted one (signed 64-bit
+        # difference). The console increments one global counter per datagram; a random nonce passes
+        # that test only half the time, so half of every datagram sent was silently discarded before
+        # the reliable layer ever saw it. Seeded randomly (any start value works: the peer primes its
+        # state from the first packet) and kept nonzero.
+        self._nonce = int.from_bytes(os.urandom(8), "big") or 1
         self.last_in_seq = 0
         self._recv_hi = None              # highest host reliable seq seen (wrap-aware) for the cumulative ack
         # Pia RELIABLE sliding-window connection. The peer ignores reliable DATA until we OPEN the stream
@@ -437,6 +445,14 @@ class Sim:
         self._pktid_by_dst[dv] = pktid + 1 if pktid < 0xFFFF else 1
         return pktid
 
+    def _next_nonce(self):
+        """The 8-byte header nonce for the next datagram: one global big-endian u64 counter, +1 per
+        datagram (all channels), never 0. The peer rejects a datagram whose nonce does not exceed the
+        last one it accepted on that channel, so this MUST be monotonic (see __init__)."""
+        nonce = self._nonce.to_bytes(8, "big")
+        self._nonce = ((self._nonce + 1) & 0xFFFFFFFFFFFFFFFF) or 1
+        return nonce
+
     def _send_messages(self, messages, *, dst_var=None, src_var=None, compress=False,
                        footer=True, establishing=False, unicast=True, pktid=None, footer_var=None):
         """Frame N Pia messages into ONE datagram and send it (observed: the reference capture BATCHES up to 9 reliable
@@ -475,7 +491,7 @@ class Sim:
         flags = (1 if do_zstd else 0) | (2 if establishing else 0)
         if pktid is None:
             pktid = self._next_pktid(dv)
-        hdr = cryptomod.PiaHeader(dst=dv, src=sv, pktid=pktid, nonce8=os.urandom(8),
+        hdr = cryptomod.PiaHeader(dst=dv, src=sv, pktid=pktid, nonce8=self._next_nonce(),
                                   flags=(pad << 4) | flags, footer=fsize)
         dg = self.crypto.encrypt(body, self.our_ip, hdr)
         dst = self.host_ip if unicast else self.broadcast

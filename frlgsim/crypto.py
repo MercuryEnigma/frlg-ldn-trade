@@ -176,8 +176,8 @@ class PiaCrypto:
 
     def encrypt(self, plaintext, src_ip, header):
         """Build a full Pia UDP datagram. `header` is a PiaHeader (its nonce8 is used as the
-        GCM header-nonce; randomise it per packet for live, or copy a captured one to replay).
-        AAD is empty (locked)."""
+        GCM header-nonce; live traffic supplies a strictly increasing per-datagram counter, which
+        the receiver enforces, or copy a captured one to replay). AAD is empty (locked)."""
         nonce = self.nonce(src_ip, header.nonce8)
         c = AES.new(self.session_key, AES.MODE_GCM, nonce=nonce, mac_len=8)
         ct, tag = c.encrypt_and_digest(plaintext)
