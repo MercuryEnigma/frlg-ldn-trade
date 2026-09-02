@@ -149,7 +149,7 @@ def list_phy_ifaces():
 def free_radio(phys, log=print):
     """Delete leftover LDN vifs and take any other interface off the radio so the station can
     grab the channel (fixes SET_CHANNEL -> EBUSY). Brings your normal Wi-Fi down on that adapter
-    for the duration (restore with wifi-init.sh --restore). Needs root."""
+    for the duration (hand it back to NetworkManager afterwards). Needs root."""
     mapping = list_phy_ifaces()
     for phy in {p for p in phys if p}:
         for iface in mapping.get(phy, []):
@@ -168,7 +168,10 @@ def free_radio(phys, log=print):
             _iw_del(vif)
             _run(["ip", "link", "del", vif])
             log(f"[live] freed radio: removed stale LDN vif {vif}")
-    _run(["pkill", "-x", "wpa_supplicant"])
+    # Scoped to `phys` on purpose: wpa_supplicant is NOT killed here. Marking the adapter's
+    # interfaces unmanaged and bringing them down already releases them from wpa_supplicant and
+    # NetworkManager; a global kill would also drop any OTHER adapter's connection (the machine's
+    # real network). If a join still fails with EBUSY, stop wpa_supplicant by hand.
     time.sleep(0.3)
 
 
