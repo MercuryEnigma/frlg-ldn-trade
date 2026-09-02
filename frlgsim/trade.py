@@ -144,6 +144,11 @@ SAVE_CHAIN_TIMEOUT = 600
 # close enough to a real pause to false-trigger; 600f (~10s) matches the dead-host SAVE_CHAIN_TIMEOUT
 # philosophy - long enough that only a truly vanished host trips it.
 BUFFERTRADE_SETTLE = 600
+# Frames to wait before selecting again after the leader sends PARTNER/PLAYER_CANCEL_TRADE. Both sides
+# return to the trade menu (CB_HandleTradeCanceled -> CB_MAIN_MENU, trade.c:2094-2113) with their select
+# statuses cleared, and the leader then waits for BOTH to select afresh; this stands in for the A-press
+# that dismisses the cancel message before the human picks again.
+RESELECT_DELAY = 60
 
 # Block counts (= ceil(size/12)) for the entry-phase trainer card: 100B -> 9 fragments.
 COUNT_TRAINER_CARD = 9      # ceil(100/12)
@@ -436,6 +441,7 @@ class TradeEngine:
         self._bt_settle = 0              # IN frames since the last host block/REQ (offline ribbons fallback)
         self._live = False               # set by the live sim: gate READY_TO_TRADE on full BufferTradeParties
         self._selected = False
+        self._reselect_wait = None      # frames until we may select again after a PARTNER/PLAYER_CANCEL
         self._pending_push = None       # a LINKCMD block queued to send next
         self._anim_wait = None          # frames remaining before READY_FINISH [S7]
         self._finish_sent = False       # READY_FINISH has been emitted [S7 early-arrival guard]
@@ -870,54 +876,59 @@ class TradeEngine:
             else:
                 self._pending_confirm = True
                 self.log("CONFIRM_FINISH early-arrival: deferring commit until READY_FINISH sent")
-        elif cmd in (BOTH_CANCEL_TRADE, PLAYER_CANCEL_TRADE, PARTNER_CANCEL_TRADE):
-            # The leader echoed a *_CANCEL (trade.c:1637-1666). Distinguish OUR graceful cancel-to-
-            # leave (we requested it: requested_cancel) from an unexpected host-initiated cancel.
+        elif cmd == BOTH_CANCEL_TRADE:
+            # Both sides picked CANCEL (trade.c:1715-1722): the session ends. Distinguish OUR graceful
+            # cancel-to-leave (we requested it: requested_cancel) from a host-initiated one.
             self.state = S_CANCEL
             self.cancelled = True
             if self.requested_cancel:
                 self.left_gracefully = True
-                self.log(f"<- {LINKCMD_NAMES.get(cmd, hex(cmd))}: graceful cancel acknowledged")
+                self.log("<- BOTH_CANCEL_TRADE: graceful cancel acknowledged")
                 self.info("Trade cancelled (mutual).")
             else:
-                self.log(f"<- {LINKCMD_NAMES.get(cmd, hex(cmd))}: host cancelled the trade")
+                self.log("<- BOTH_CANCEL_TRADE: host cancelled the trade")
             # [barrier (d)] cancel-exit standby. ONLY LINKCMD_BOTH_CANCEL_TRADE routes through
-            # CB_INIT_EXIT_CANCELED_TRADE -> SetLinkStandbyCallback() [trade.c:1643-1646,2117-2132];
-            # PLAYER/PARTNER_CANCEL go to CB_HandleTradeCanceled (back to the menu, no standby). So a
-            # BOTH_CANCEL arms a CHILD-INITIATED standby barrier before the final exit (the host's
-            # leader branch WAITS for us here too - the deadlock fix); we set `done` only once it
-            # passes (host echo, or the offline watchdog against a non-participating host). The other
-            # cancels finish immediately.
-            if cmd == BOTH_CANCEL_TRADE:
-                self._cancel_barrier_active = True
-                self.barrier.initiate(barriermod.STANDBY)
-                self.log("barrier (d): INITIATE cancel-exit standby [trade.c:2117-2132]")
-            else:
-                self.done = True
+            # CB_INIT_EXIT_CANCELED_TRADE -> SetLinkStandbyCallback() [trade.c:1643-1646,2117-2132]. It
+            # arms a CHILD-INITIATED standby barrier before the final exit (the host's leader branch
+            # WAITS for us here too - the deadlock fix); we set `done` only once it passes (host echo,
+            # or the offline watchdog against a non-participating host).
+            self._cancel_barrier_active = True
+            self.barrier.initiate(barriermod.STANDBY)
+            self.log("barrier (d): INITIATE cancel-exit standby [trade.c:2117-2132]")
+        elif cmd in (PLAYER_CANCEL_TRADE, PARTNER_CANCEL_TRADE):
+            # One side selected/confirmed and the other cancelled (trade.c:1695-1712, 1737-1746):
+            # the leader prints the message and BOTH sides go back to the trade menu via
+            # CB_HandleTradeCanceled -> CB_MAIN_MENU (2094-2113) with every select/confirm status
+            # cleared. The session is NOT over: the leader now waits for both to select again. Return
+            # to the menu and, after the dismiss delay, select afresh: CANCEL again if we are leaving
+            # (the leader's next CANCEL then yields BOTH_CANCEL_TRADE), else our mon again. Treating
+            # this as the end left the leader waiting forever for our next selection.
+            self.log(f"<- {LINKCMD_NAMES.get(cmd, hex(cmd))}: back to the trade menu; selecting again")
+            self.info("Trade cancelled by one side; back at the menu.")
+            self.state = S4_PARTY
+            self._selected = False
+            self._reselect_wait = RESELECT_DELAY
+            self._pending_push = None
+            self._cancel_after_send = False
+            self._confirmed = False
+            self._cancel_wait = None
+            self.cancelled = False
+            self.requested_cancel = False
+            self.host_cursor = None
 
     # ---- validity gates (S5 select / S6 confirm) ----------------------------
-    def _num_other_alive(self, slot):
-        """Count OUR party mons (excluding `slot`) that are non-empty - the numMonsLeft loop in
-        CanTradeSelectedMon (trade.c:2809-2813) / CheckValidityOfTradeMons hasLiveMon
-        (trade.c:1958-1962). Eggs are excluded there too; we cannot decode the egg flag offline so
-        non-empty (species present) is the stand-in (live residual)."""
-        n = 0
-        for i, m in enumerate(self.party):
-            if i == slot:
-                continue
-            if not m.is_empty:
-                n += 1
-        return n
-
     def _is_valid_slot(self, slot):
         """Stand-in for CanTradeSelectedMon == CAN_TRADE_MON (trade.c:2745-2818): the slot is in
-        range, points at a non-empty mon, and trading it would NOT leave us with no other mon
-        (CANT_TRADE_LAST_MON guard). Returns True iff READY_TO_TRADE may be emitted [S5]."""
+        range and points at a non-empty mon. Returns True iff READY_TO_TRADE may be emitted [S5].
+
+        Deliberate divergence: the console's CANT_TRADE_LAST_MON rule (trade.c:2809-2818, and the
+        matching hasLiveMon check in CheckValidityOfTradeMons, 1958-1962) protects a real trainer from
+        giving away their only usable Pokemon. Our party is a list of files, so there is nobody to
+        strand, and the leader never checks its partner's party count. Enforcing it made a one-file
+        party cancel the trade the instant the menu opened."""
         if not (0 <= slot < len(self.party)):
             return False
-        if self.party[slot].is_empty:
-            return False
-        return self._num_other_alive(slot) > 0
+        return not self.party[slot].is_empty
 
     def _trade_menu_live(self):
         """The trade menu/link is 'live' once the party EXCHANGE has fully finished - mirroring that
@@ -950,11 +961,12 @@ class TradeEngine:
 
     def _confirm_verdict(self):
         """CheckValidityOfTradeMons stand-in (trade.c:1951-1973). PARTNER_MON_INVALID takes priority
-        (checked first in the decomp, line 1965), then PLAYER_MON_INVALID (last-alive), else
-        BOTH_MONS_VALID. Returns one of PLAYER_MON_INVALID / BOTH_MONS_VALID / PARTNER_MON_INVALID."""
+        (checked first in the decomp, line 1965), then PLAYER_MON_INVALID for an empty slot, else
+        BOTH_MONS_VALID. The console's last-alive-mon rule is not applied (see _is_valid_slot).
+        Returns one of PLAYER_MON_INVALID / BOTH_MONS_VALID / PARTNER_MON_INVALID."""
         if self._partner_mon_invalid():
             return PARTNER_MON_INVALID
-        if self._num_other_alive(self.trade_slot) == 0:
+        if not self._is_valid_slot(self.trade_slot):
             return PLAYER_MON_INVALID
         return BOTH_MONS_VALID
 
@@ -1084,6 +1096,7 @@ class TradeEngine:
         self._pending_confirm = False
         self._confirmed = False
         self._cancel_wait = None
+        self._reselect_wait = None
         # the per-round one-shot soft initiates re-arm each round (the menu-entry + scene-seam barriers
         # fire once per trade); the save-chain (_save_barriers) is driven by the commit, not here.
         self._barrier_initiated_menu = False
@@ -1168,6 +1181,11 @@ class TradeEngine:
         only ~5% as fast (~10 min instead of 32s) and READY_FINISH_TRADE was never sent -> the host sat
         forever on "Take good care of <mon>!" awaiting our finish. [3rd instance of the
         engine-state-gated-behind-emission class; cf. the block HOLD->DONE pump below.]"""
+        if self._reselect_wait is not None:
+            if self._reselect_wait > 0:
+                self._reselect_wait -= 1
+            else:
+                self._reselect_wait = None
         if self._cancel_wait is not None:
             if self._cancel_wait > 0:
                 self._cancel_wait -= 1
@@ -1219,18 +1237,13 @@ class TradeEngine:
                 if self._cancel_after_send and not self.done:
                     self._cancel_after_send = False
                     self.state = S_CANCEL
-                    if self.leaving:
-                        # Graceful cancel-to-leave. Do NOT finish on send; keep the
-                        # link alive (idle keepalive / barrier replies) until the host echoes
-                        # *_CANCEL (_on_linkcmd flips done + left_gracefully). This is a graceful
-                        # cancel, not a hard stop.
-                        self.log("REQUEST_CANCEL sent -> awaiting host *_CANCEL echo")
-                    else:
-                        # a mid-trade abort (invalid slot / decline / invalid mon): finish now,
-                        # matching CB_HandleTradeCanceled -> CB_InitExitCanceledTrade -> exit
-                        # (trade.c:2094-2132).
-                        self.done = True
-                        self.log("cancel block sent -> S_CANCEL (leaving)")
+                    # Never finish on send. A cancel only ends the session when the leader answers
+                    # BOTH_CANCEL_TRADE; a PARTNER/PLAYER_CANCEL_TRADE puts both sides back in the menu
+                    # (trade.c:1695-1712, 1737-1746), where we select CANCEL again. So a confirm-stage
+                    # decline or an untradeable mon becomes a cancel-to-leave from here on. Keep the
+                    # link alive (idle keepalive / barrier replies) until the leader's echo lands.
+                    self.leaving = True
+                    self.log("cancel sent -> awaiting the leader's *_CANCEL echo")
             return words
 
         # [barrier (d)] cancel-exit standby [trade.c:2117-2132]. After a BOTH_CANCEL the child stands by
@@ -1331,7 +1344,7 @@ class TradeEngine:
         # CanTradeSelectedMon -> SetReadyToTrade (trade.c:1905-1908), or selecting the CANCEL option
         # -> CB_ProcessCancelTradeInput case 0 -> QueueLinkData(LINKCMD_REQUEST_CANCEL, 0)
         # (trade.c:2049). Autonomous stand-in: fire once the menu is live (_trade_menu_live).
-        if (not self._selected and self.state in (S4_PARTY,)
+        if (not self._selected and self.state in (S4_PARTY,) and self._reselect_wait is None
                 and self._trade_menu_live() and self._pending_push is None):
             self._selected = True
             # ENTRY: the party exchange is fully done and we are about to select a mon -> the trade
@@ -1355,9 +1368,12 @@ class TradeEngine:
                 self.log(f"-> READY_TO_TRADE cursor={self.trade_slot} "
                          f"(trade {self.round + 1}/{self.trades})")
             else:
+                # Nothing valid to offer: pick CANCEL, as a cancel-to-leave (leaving) so that if the
+                # leader answers PARTNER_CANCEL_TRADE (it had already picked a mon) we return to the
+                # menu and pick CANCEL again until both sides cancel (BOTH_CANCEL_TRADE).
                 self.log(f"slot {self.trade_slot} fails CanTradeSelectedMon -> REQUEST_CANCEL")
                 self.info(f"Cannot trade slot {self.trade_slot}; cancelling to leave.")
-                self.state = S5_SELECT
+                self.leaving = True
                 self._pending_push = linkcmd_block(REQUEST_CANCEL)
                 self.requested_cancel = True
                 self.cancelled = True
