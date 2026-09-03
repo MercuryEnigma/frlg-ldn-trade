@@ -106,6 +106,7 @@ TRAINER_CARD_SIZE = 0x60                 # sizeof(struct TrainerCard) = 96
 TRAINER_CARD_BLOCK_SIZE = 100            # BLOCK_REQ_SIZE_100 buffer [link.c:187]
 TC_OFF_GENDER = 0x00
 TC_OFF_STARS = 0x01
+TC_OFF_HAS_POKEDEX = 0x02                # TrainerCardRSE.hasPokedex (bool8)
 TC_OFF_TRAINER_ID = 0x0E                 # TrainerCardRSE.trainerId (u16)
 TC_OFF_PLAYER_NAME = 0x30                # TrainerCardRSE.playerName[PLAYER_NAME_LENGTH+1]
 TC_OFF_VERSION = 0x38                    # TrainerCard.version (u8)
@@ -121,6 +122,10 @@ def build_trainer_card(link_player, wonder_card_id=0, mon_species=None, *, name_
     at offset 96 (CreateTrainerCardInBuffer's setWonderCard write) + 2 bytes residue."""
     card = bytearray(TRAINER_CARD_BLOCK_SIZE)
     card[TC_OFF_GENDER] = link_player.gender & 0xFF
+    # A LinkPlayer that claims the National Dex (progressFlags & 0x0F) necessarily owns a Pokedex, and
+    # the partner displays this card after the exchange [union_room.c CB2_ShowCard -> ShowTrainerCardInLink];
+    # keep the card consistent with the identity [trainer_card.c: hasPokedex = FLAG_SYS_POKEDEX_GET].
+    card[TC_OFF_HAS_POKEDEX] = 1 if link_player.progress_flags & 0x0F else 0
     # trainerId on the card is the public (low 16 bits) of the 32-bit OT id [trainer_card.c
     # TrainerCard_GenerateCardForLinkPlayer reads GetTrainerId() low half].
     card[TC_OFF_TRAINER_ID:TC_OFF_TRAINER_ID + 2] = \
