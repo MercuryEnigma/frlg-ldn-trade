@@ -51,6 +51,9 @@ This demo was recorded using the **ALFA AWUS036ACHM**. The RZ616 is half as fast
 | --verbose    | N/A              | Verbose output  |
 | --phy        | phy# (e.g. phy1)  | WiFi phy selection |
 | --keys       | /path/to/prod.keys | non-default prod.keys location |
+| --ot         | trainer name      | OT name (default EMU) |
+| --version    | firered / leafgreen | game version (default leafgreen) |
+| --id         | TID or TID:SID (decimal) | trainer ID and optional secret ID |
 
 Above is the configuration I suggest using if you'd like a quick and easy demonstration of the program. You can use any of the listed optional flags, they're safe. Many of the undocumented ones are either unfinished, untested, internal tools, or artifacts of experiments that did not/have not yet panned out.
 
