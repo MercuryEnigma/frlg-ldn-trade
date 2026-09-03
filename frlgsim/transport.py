@@ -286,7 +286,7 @@ class LiveTransport:
     # FRLG LDN identity (the same the bridge/console use).
     LOCAL_COMMUNICATION_ID = 0x0100610011000000     # FireRed/LeafGreen emulator title id
     SCENE_ID = 0
-    APPLICATION_VERSION = 1
+    APPLICATION_VERSION = 88     # the LDN participant app_version a native FRLG station advertises (0x58)
 
     def __init__(self, password=None, nickname="EMU", keys_path="~/.switch/prod.keys",
                  local_comm_id=None, scene_id=None, app_version=None,
@@ -379,7 +379,7 @@ class LiveTransport:
                 # joinable filter but then rejects our auth, surfacing as an opaque trio timeout - logging
                 # it makes "this Switch isn't accepting this MAC" diagnosable.
                 self.log(f"[live] saw network comm_id=0x{n.local_communication_id:016x} "
-                         f"scene={n.scene_id} {n.num_participants}/{n.max_participants} "
+                         f"scene={n.scene_id} app_version={n.app_version} {n.num_participants}/{n.max_participants} "
                          f"accept_policy={getattr(n, 'accept_policy', '?')}")
             # Prefer an exact FRLG comm-id match; else fall back to the only joinable network.
             net = next((n for n in joinable
