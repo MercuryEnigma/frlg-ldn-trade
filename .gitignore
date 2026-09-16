@@ -2,7 +2,7 @@
 # frlgtrade.py. Everything else is local to this setup.
 
 # Ignore every top-level folder except the frlgsim package.
-# This covers tests/, utils/, notes/, captures/, .backups/, and venv/.
+# This covers tests/, docs/, utils/, notes/, captures/, .backups/, and venv/.
 /*/
 !/frlgsim/
 
@@ -11,6 +11,19 @@
 *.pk3
 *.ek3
 
+# Local ROM dumps and save files used for offline testing (e.g. frlgsim's
+# POKEMON_FIRE_BPRE01.gba/.sav) - copyrighted and/or carry live trainer data.
+*.gba
+*.sav
+
 # Python bytecode (applies inside frlgsim/ as well)
 __pycache__/
 *.pyc
+
+# Runtime logs, protocol traces, and packet captures may contain console,
+# trainer, or network identifiers and should stay local.
+*.log
+*.jsonl
+*.pcap
+*.pcapng
+host-tap-*.txt

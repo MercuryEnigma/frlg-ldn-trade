@@ -40,6 +40,13 @@ COUNT_PARTY = 17
 COUNT_MAIL = 19         # host mail block: 208B payload (PARTY_SIZE*sizeof(Mail=34)+4) in the fixed 220B buffer -> ceil(220/12)
 COUNT_RIBBON = 4        # host giftRibbons block: 11B payload (giftRibbons[11]) in the fixed 40B buffer -> ceil(40/12)
 
+# A cleared struct Mail is NOT all-zero: ClearMailStruct writes 0xFFFF to its nine easy-chat
+# words and EOS (0xFF) to all eight playerName bytes, then clears trainerId/item and sets species
+# to BULBASAUR. BufferTradeParties transmits six 34-byte records plus four bytes from the reused
+# send buffer through the fixed 220-byte request. Keep the remaining request padding deterministic.
+MAIL_STRUCT_SIZE = 34
+MAIL_COUNT = 6
+
 # CheckValidityOfTradeMons return values [include/constants/trade.h:31-34].
 PLAYER_MON_INVALID = 0          # our selected mon is the last alive mon
 BOTH_MONS_VALID = 1
@@ -779,7 +786,7 @@ class TradeEngine:
         if size == 100:
             return self.trainer_card    # any other 100B pull = the trainer card too
         if size == 220:
-            return b"\x00" * 220        # mail (none)
+            return b"\x00" * 220        # mail (none); proven compatible with the Switch bridge
         if size == 40:
             return b"\x00" * 40         # giftRibbons (none)
         return b"\x00" * size
