@@ -9,10 +9,16 @@ import time
 from . import beacon, transport
 
 
-# Captured from a native FireRed Direct Corner leader. Unknown record fields are
-# intentionally preserved; only documented identity/session fields are changed.
+# Derived from a native FireRed Direct Corner leader capture, with both identity fields
+# (Pia header nickname, RFU record name/trainer id) swapped for the synthetic "EMU"
+# placeholder used elsewhere in this codebase - the real capture's Switch nickname and
+# in-game trainer name never leave a developer's machine. Every other byte (Pia header
+# comm-version/password/player-count fields, RFU session id, partner info, game data) is
+# the confirmed-real, non-identifying value from that capture and is left untouched.
+# Unknown record fields are intentionally preserved; only documented identity/session
+# fields are changed at beacon-build time (build_trade_app_data()).
 CAPTURED_TRADE_BEACON = bytes.fromhex(
-    "005c160058000000000000000000000000000000000101000000050143686173650000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000686c5a68656c76623476354358455a232323232368642323232323232323"
+    "005c1600580000000000000000000000000000000001010000000301454d5500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000556a6c3364482e593a76354962455a232323232368642323232323232323"
 )
 
 RADIOTAP_HEADER = struct.pack("<BBHI", 0, 0, 8, 0)
