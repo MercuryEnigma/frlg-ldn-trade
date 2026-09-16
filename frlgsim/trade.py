@@ -47,17 +47,6 @@ COUNT_RIBBON = 4        # host giftRibbons block: 11B payload (giftRibbons[11]) 
 MAIL_STRUCT_SIZE = 34
 MAIL_COUNT = 6
 
-
-def empty_mail_block():
-    record = (b"\xff" * 18       # words[9]
-              + b"\xff" * 8     # playerName[8]
-              + b"\x00" * 4     # trainerId[4]
-              + b"\x01\x00"     # SPECIES_BULBASAUR
-              + b"\x00\x00")    # ITEM_NONE
-    assert len(record) == MAIL_STRUCT_SIZE
-    payload = record * MAIL_COUNT
-    return payload.ljust(220, b"\x00")
-
 # CheckValidityOfTradeMons return values [include/constants/trade.h:31-34].
 PLAYER_MON_INVALID = 0          # our selected mon is the last alive mon
 BOTH_MONS_VALID = 1
