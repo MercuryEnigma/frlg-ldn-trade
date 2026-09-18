@@ -71,11 +71,6 @@ def build_parser():
     parser.add_argument("--skip-preflight", action="store_true")
     parser.add_argument("--skip-encryption", "--skip_encryption", action="store_true",
                         help="delegate CCMP encryption to mac80211/hardware")
-    parser.add_argument("--native-nonce-sequence", "--native_nonce_sequence",
-                        action="store_true",
-                        help="use FireRed's session-wide incrementing Pia nonce")
-    parser.add_argument("--session-response-first", action="store_true",
-                        help="send Session type 2 unicast before type 5 broadcast")
     return parser
 
 
@@ -131,9 +126,7 @@ def build_run_config(parser, args):
             channel=args.channel, scene_id=args.scene,
             max_participants=args.max_participants,
             skip_preflight=args.skip_preflight,
-            skip_encryption=args.skip_encryption,
-            native_nonce_sequence=args.native_nonce_sequence,
-            session_response_first=args.session_response_first)
+            skip_encryption=args.skip_encryption)
         return configmod.TradeRunConfig(profile, plan, ldn, options)
     except ValueError as exc:
         parser.error(str(exc))

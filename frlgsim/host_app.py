@@ -83,8 +83,6 @@ class HostApplication:
             tracer=self.tracer, log=self.log)
         self.peer = HostPeerProtocol(
             self.network, self.profile, self.session, active,
-            native_nonce_sequence=self.options.native_nonce_sequence,
-            session_response_first=self.options.session_response_first,
             log=self.log)
         self._last_trade_state = self.session.trade.state
         return link_player
@@ -103,9 +101,7 @@ class HostApplication:
             "Pia-backed send-once mode (recommended for this LDN bridge)."
             if self.plan.trust_pia else
             "raw-RFU retransmit mode (diagnostic; may flood the Pia bridge)."))
-        self.info("Pia nonce mode: " + (
-            "native session-wide counter" if self.options.native_nonce_sequence
-            else "independent random values"))
+        self.info("Pia nonce mode: session-wide incrementing counter")
 
     def _send_pending(self, datagrams):
         for outbound in datagrams:

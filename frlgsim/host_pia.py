@@ -29,19 +29,16 @@ class OutboundDatagram:
 
 
 class PiaNonceSequence:
-    """Session-wide native counter, with random mode retained for diagnostics."""
+    """Session-wide native Pia nonce counter."""
 
-    def __init__(self, native=False, initial=None):
-        self.native = bool(native)
+    def __init__(self, initial=None):
         if initial is None:
             initial = int.from_bytes(os.urandom(8), "big")
-        self._next = int(initial) & 0xFFFFFFFFFFFFFFFF
+        self._next = (int(initial) & 0xFFFFFFFFFFFFFFFF) or 1
 
     def take(self):
-        if not self.native:
-            return os.urandom(8)
         nonce = self._next.to_bytes(8, "big")
-        self._next = (self._next + 1) & 0xFFFFFFFFFFFFFFFF
+        self._next = ((self._next + 1) & 0xFFFFFFFFFFFFFFFF) or 1
         return nonce
 
 
@@ -73,7 +70,7 @@ def decode_datagram(datagram, src_ip, pia_crypto):
 
 def build_messages(network, pia_crypto, messages, *, dst_var, src_var,
                    pktid=1, compress=False, auto_compress=False,
-                   establishing=False, footer_var=None, nonce_source=None):
+                   establishing=False, footer_var=None, nonce_source):
     body = b"".join(reliable.build_message(
         item[0], item[1], item[2] if len(item) > 2 else None)
         for item in messages)
@@ -89,7 +86,7 @@ def build_messages(network, pia_crypto, messages, *, dst_var, src_var,
     body += b"\xff" * pad
     header = crypto.PiaHeader(
         dst=dst_var, src=src_var, pktid=pktid,
-        nonce8=(nonce_source.take() if nonce_source else os.urandom(8)),
+        nonce8=nonce_source.take(),
         flags=(pad << 4) | (1 if do_compress else 0) | (2 if establishing else 0),
         footer=footer_size)
     return pia_crypto.encrypt(body, network.our_ip, header)
@@ -99,7 +96,7 @@ def build_message(network, pia_crypto, proto, payload, **kwargs):
     return build_messages(network, pia_crypto, [(proto, payload)], **kwargs)
 
 
-def build_net_probe(network, sequence_id=2, nonce_source=None, pia_crypto=None):
+def build_net_probe(network, sequence_id=2, *, nonce_source, pia_crypto=None):
     """Build the leader's establishing Net 0x11 broadcast datagram."""
     station_ips = [network.our_ip] + [p[1] for p in network.participants]
     network_id = zlib.crc32(bytes(network.ssid)[1:16]) & 0xFFFFFFFF
@@ -111,7 +108,7 @@ def build_net_probe(network, sequence_id=2, nonce_source=None, pia_crypto=None):
     plaintext = body + b"\xff" * pad
     header = crypto.PiaHeader(
         dst=0, src=PIA_HOST_VAR, pktid=0,
-        nonce8=(nonce_source.take() if nonce_source else os.urandom(8)),
+        nonce8=nonce_source.take(),
         flags=(pad << 4) | 0x03, footer=0)
     pia_crypto = pia_crypto or crypto.PiaCrypto(network.ssid)
     return pia_crypto.encrypt(plaintext, network.our_ip, header)
@@ -138,7 +135,7 @@ def build_net_property_update(network, app_data, sequence_id=1):
 
 
 def build_session_acceptance(network, pia_crypto, join, host_name,
-                             nonce_source=None):
+                             *, nonce_source):
     """Build the native type-5 update/type-2 response acceptance pair."""
     host_constant = pia_connect.ldn_constant_id(network.our_mac)
     host_var, guest_var = join["destination_var"], join["source_var"]
@@ -160,7 +157,7 @@ def build_session_acceptance(network, pia_crypto, join, host_name,
 
 
 def build_host_rtt(network, pia_crypto, payload, guest_var, packet_id,
-                   nonce_source=None):
+                   *, nonce_source):
     """Frame one host RTT message on Pia's reserved Session channel."""
     return build_message(
         network, pia_crypto, pia_connect.PROTO_RTT, payload,
@@ -191,16 +188,14 @@ class HostPeerProtocol:
     """Own all Pia state for the one supported Switch peer."""
 
     def __init__(self, network, profile, host_session, active_app_data, *,
-                 native_nonce_sequence=False, session_response_first=False,
                  log=lambda *a: None):
         self.network = network
         self.profile = profile
         self.session = host_session
         self.active_app_data = bytes(active_app_data)
-        self.response_first = bool(session_response_first)
         self.log = log
         self.info = getattr(log, "info", log)
-        self.nonces = PiaNonceSequence(native=native_nonce_sequence)
+        self.nonces = PiaNonceSequence()
 
         self.joined = False
         self.net_acked = False
@@ -248,7 +243,8 @@ class HostPeerProtocol:
 
     def _build_net_probe(self):
         return build_net_probe(
-            self.network, self.net_sequence, self.nonces, self.pia_crypto)
+            self.network, self.net_sequence,
+            nonce_source=self.nonces, pia_crypto=self.pia_crypto)
 
     def _build_property_update(self):
         return build_net_property_update(self.network, self.active_app_data)
@@ -256,14 +252,10 @@ class HostPeerProtocol:
     def _session_pair(self):
         return build_session_acceptance(
             self.network, self.pia_crypto, self.session_join,
-            self.profile.session_name, self.nonces)
+            self.profile.session_name, nonce_source=self.nonces)
 
     def _send_session_acceptance(self):
         update, response = self._session_pair()
-        if self.response_first:
-            self._send(response, self.session_join["ip"])
-            self._send(update, self.network.broadcast)
-            return "type 2 Join Response (unicast), then type 5 Update Session (broadcast)"
         self._send(update, self.network.broadcast)
         self._send(response, self.session_join["ip"])
         return "type 5 Update Session (broadcast), then type 2 Join Response (unicast)"

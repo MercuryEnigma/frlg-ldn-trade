@@ -50,8 +50,7 @@ def build_bulk_ack(next_expected, mask=b"\x00" * 16, stream_id=0):
 
 def parse_bulk_ack(payload):
     """-> (ack_id, mask) from a FLAGSA_CTRL payload. ack_id = next-expected seq (every seq below it
-    is acked); mask = 128-bit gap bitmap (`ack_id + index` is acked when bit `index` is set;
-    bit zero is normally clear because ack_id itself is the cumulative hole).
+    is acked); mask = 128-bit gap bitmap (`ack_id + 1 + index` is acked when bit `index` is set).
     Returns (None, b'') if too short."""
     if len(payload) < 4:
         return None, b""
@@ -181,7 +180,7 @@ class ReliableLink:
 
     def on_ack(self, ack_id, mask=None, now_ms=None):
         """Process the peer's bulk-ack. A frame is acknowledged when it is in the cumulative run below
-        ack_id, OR when the selective mask marks it received (bit i set => ack_id+i received, LSB-first
+        ack_id, OR when the selective mask marks it received (bit i set => ack_id+1+i received, LSB-first
         within each byte). Acknowledged frames stop being retransmitted immediately, but the window base
         only advances over the CONTIGUOUS acknowledged run from the base - a mask-acked frame above a gap
         keeps its slot until the gap fills. This is the selective-repeat sender: holes are retransmitted,
@@ -198,12 +197,8 @@ class ReliableLink:
         maskint = int.from_bytes(mask, "little") if mask else 0
         for seq, entry in self.unacked.items():
             arrived = _seq_lt(seq, ack_id)                 # cumulative run below ack_id
-            if not arrived and maskint:                    # selective mask: bit i => ack_id+i received
-                # Bit zero corresponds to ack_id itself.  Since ack_id is the
-                # cumulative hole that bit is normally clear; the first
-                # out-of-order sequence (ack_id + 1) is bit one.  Native
-                # capture example: ack_id=fff7, mask=06 marks fff8+fff9.
-                i = (seq - ack_id) & 0xFFFF
+            if not arrived and maskint:                    # selective mask: bit i => ack_id+1+i received
+                i = (seq - ack_id - 1) & 0xFFFF
                 arrived = i < 128 and bool((maskint >> i) & 1)
             if arrived and not entry[_E_ACKED]:
                 if now_ms is not None and entry[_E_RESENDS] == 0:
@@ -303,12 +298,11 @@ class ReliableLink:
     def ack_payload(self):
         """Bulk-ack: CUMULATIVE next-expected (recv_next) + a SELECTIVE MASK of the out-of-order frames we
         hold (recv_ooo), so the peer fast-retransmits exactly its dropped frames (mask bit i set =>
-        recv_next+i received, LSB-first within each byte; bit zero is the cumulative hole and is clear).
-        recv_ooo is populated by note_received (live
+        recv_next+1+i received, LSB-first within each byte). recv_ooo is populated by note_received (live
         path); on the offline on_data path it stays empty -> zero mask (cumulative-only)."""
         mask = bytearray(16)
         for s in self.recv_ooo:
-            i = (s - self.recv_next) & 0xFFFF
+            i = (s - self.recv_next - 1) & 0xFFFF
             if i < 128:
                 mask[i >> 3] |= (1 << (i & 7))
         return build_bulk_ack(self.recv_next, bytes(mask))

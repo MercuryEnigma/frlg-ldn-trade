@@ -172,8 +172,6 @@ class HostOptions:
     max_participants: int = 6
     skip_preflight: bool = False
     skip_encryption: bool = False
-    native_nonce_sequence: bool = False
-    session_response_first: bool = False
 
     def __post_init__(self):
         if type(self.channel) is not int or not 1 <= self.channel <= 14:
