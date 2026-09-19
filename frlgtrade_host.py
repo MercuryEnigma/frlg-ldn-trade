@@ -18,12 +18,6 @@ import sys
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
-# Prefer the bundled LDN checkout.  It contains the host-side encryption mode
-# used by the mt7601u/mac80211 setup without requiring a system installation.
-BUNDLED_LDN = os.path.join(PROJECT_ROOT, "LDN")
-if os.path.isdir(os.path.join(BUNDLED_LDN, "ldn")):
-    sys.path.insert(0, BUNDLED_LDN)
-
 from frlgsim import config as configmod, trade_runtime  # noqa: E402
 from frlgsim.host_app import HostApplication  # noqa: E402
 
