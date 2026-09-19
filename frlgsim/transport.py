@@ -12,6 +12,7 @@ LiveTransport   - LIVE. Joins the FRLG console's LDN session with kinnay's `ldn`
                   exercised offline, so it is written to mirror the proven bridge code path.
 """
 
+import dataclasses
 import json
 import select
 import socket
@@ -678,7 +679,7 @@ class HostTransport:
     def __init__(self, app_data=b"", password=None, nickname="EMU", keys_path="~/.switch/prod.keys",
                  local_comm_id=None, scene_id=None, app_version=None, max_participants=2,
                  phyname="phy0", ifname="ldn-tap", ap_ifname="ldn", mon_ifname="ldn-mon",
-                 channel=None, skip_encryption=False, tracer=None, log=print):
+                 channel=None, skip_encryption=True, tracer=None, log=print):
         self.info = getattr(log, "info", log)
         self.tracer = tracer                # optional ldntrace.Tracer: byte/action trace of hosting
         self.app_data = bytes(app_data or b"")
@@ -779,7 +780,20 @@ class HostTransport:
             param.ifname = self.ap_ifname
             param.ifname_monitor = self.mon_ifname
             param.ifname_tap = self.ifname
-            param.skip_encryption = self.skip_encryption
+            if self.skip_encryption:
+                param_fields = {f.name for f in dataclasses.fields(ldn.CreateNetworkParam)}
+                if "skip_encryption" not in param_fields:
+                    try:
+                        import importlib.metadata
+                        installed = importlib.metadata.version("ldn")
+                    except Exception:
+                        installed = "unknown"
+                    raise RuntimeError(
+                        "--skip-encryption requires an ldn build whose CreateNetworkParam "
+                        "has a skip_encryption field (the custom/vendor checkout); the "
+                        f"installed ldn package (version {installed}) has no such field "
+                        "and would silently ignore the flag.")
+                param.skip_encryption = True
             if self.channel is not None:
                 param.channel = self.channel
             self.info("Creating the LDN network (hosting)...")

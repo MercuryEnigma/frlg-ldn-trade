@@ -171,7 +171,7 @@ class HostOptions:
     scene_id: int | None = None
     max_participants: int = 6
     skip_preflight: bool = False
-    skip_encryption: bool = False
+    skip_encryption: bool = True
 
     def __post_init__(self):
         if type(self.channel) is not int or not 1 <= self.channel <= 14:

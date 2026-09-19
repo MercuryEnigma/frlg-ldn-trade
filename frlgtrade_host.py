@@ -69,8 +69,12 @@ def build_parser():
     parser.add_argument("--max-participants", type=int, default=6,
                         choices=range(2, 9), metavar="2-8")
     parser.add_argument("--skip-preflight", action="store_true")
-    parser.add_argument("--skip-encryption", "--skip_encryption", action="store_true",
-                        help="delegate CCMP encryption to mac80211/hardware")
+    parser.add_argument(
+        "--skip-encryption", "--skip_encryption",
+        action=argparse.BooleanOptionalAction, default=True,
+        help="delegate CCMP encryption to mac80211/hardware (default: on; "
+             "requires the vendored ldn build - see requirements.txt); "
+             "--no-skip-encryption falls back to ldn's own software CCMP")
     return parser
 
 
