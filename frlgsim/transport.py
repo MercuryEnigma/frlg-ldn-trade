@@ -599,20 +599,91 @@ def list_phys():
         return []
 
 
+def _parse_iw_dev_usage(iw_dev_output):
+    """Return ``{phy: [(interface, type, ssid), ...]}`` from ``iw dev``.
+
+    An SSID is present only while a managed interface is associated.  Keeping
+    this parser separate from phy capability discovery lets ``--phy auto``
+    avoid taking down the radio that carries the machine's normal network.
+    """
+    usage = {}
+    phy = None
+    interface = None
+    iftype = None
+    ssid = None
+
+    def finish_interface():
+        if phy is not None and interface is not None:
+            usage.setdefault(phy, []).append((interface, iftype, ssid))
+
+    for raw in iw_dev_output.splitlines():
+        s = raw.strip()
+        if s.startswith("phy#"):
+            finish_interface()
+            phy = "phy" + s[4:]
+            usage.setdefault(phy, [])
+            interface = iftype = ssid = None
+        elif s.startswith("Interface ") and phy is not None:
+            finish_interface()
+            interface = s.split()[1]
+            iftype = ssid = None
+        elif interface is not None and s.startswith("type "):
+            iftype = s[5:].strip()
+        elif interface is not None and s.startswith("ssid "):
+            ssid = s[5:].strip()
+    finish_interface()
+    return usage
+
+
+def _phy_driver(phy):
+    try:
+        import os
+        return os.path.basename(os.path.realpath(f"/sys/class/ieee80211/{phy}/device/driver"))
+    except OSError:
+        return "?"
+
+
 def find_ap_phy(log=print):
-    """Return the first phy whose driver advertises AP mode, or None. Used to resolve `--phy auto`
-    so the tooling survives the phy renumbering that happens when the adapter is reloaded/replugged
-    (e.g. the mt7601u-ap driver came up as phy3, not phy0)."""
+    """Return an unused host-capable phy, or ``None``.
+
+    Phy numbers are assigned dynamically, so their ordering cannot identify
+    the USB adapter.  Exclude any phy whose managed interface is associated to
+    an SSID, then prefer AP+monitor capability because LDN hosting creates both
+    interface types.  This keeps ``--phy auto`` from disconnecting the radio
+    carrying SSH or Internet access.
+    """
+    try:
+        dev_out = subprocess.check_output(
+            ["iw", "dev"], text=True, stderr=subprocess.DEVNULL)
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        log(f"[host] --phy auto: cannot determine which radio is in use "
+            f"because `iw dev` failed ({e})")
+        return None
+    usage = _parse_iw_dev_usage(dev_out)
+    candidates = []
     for phy in list_phys():
         try:
             out = subprocess.check_output(["iw", "phy", phy, "info"],
                                           text=True, stderr=subprocess.DEVNULL)
         except (subprocess.CalledProcessError, FileNotFoundError):
             continue
-        modes, _soft = _parse_iw_modes(out)
-        if "AP" in modes:
-            log(f"[host] --phy auto -> {phy} (AP-capable)")
-            return phy
+        modes, soft = _parse_iw_modes(out)
+        if "AP" not in modes:
+            continue
+        active = [(iface, ssid) for iface, iftype, ssid in usage.get(phy, [])
+                  if iftype == "managed" and ssid]
+        if active:
+            detail = ", ".join(
+                f"{iface} associated to {ssid!r}" for iface, ssid in active)
+            log(f"[host] --phy auto: skipping {phy} ({_phy_driver(phy)}; {detail})")
+            continue
+        has_monitor = "monitor" in modes or "monitor" in soft
+        candidates.append((not has_monitor, phy, has_monitor))
+    if candidates:
+        _rank, phy, has_monitor = min(candidates)
+        capability = "AP+monitor" if has_monitor else "AP (monitor unavailable)"
+        log(f"[host] --phy auto -> {phy} ({_phy_driver(phy)}; {capability}; unused)")
+        return phy
     return None
 
 
@@ -633,12 +704,7 @@ def preflight_host(phyname, log=print, _iw_output=None):
                 f"skipping the AP-mode check")
             return True                     # can't check -> let the real bring-up decide
     modes, soft = _parse_iw_modes(_iw_output)
-    driver = "?"
-    try:
-        import os
-        driver = os.path.basename(os.path.realpath(f"/sys/class/ieee80211/{phyname}/device/driver"))
-    except OSError:
-        pass
+    driver = _phy_driver(phyname)
     if "AP" in modes:
         if "monitor" not in modes and "monitor" not in soft:
             log(f"[host] preflight: {phyname} ({driver}) has AP but no monitor mode - "

@@ -50,7 +50,7 @@ def build_parser():
     parser.add_argument("--password", default="",
                         help="LDN passphrase hex; default uses the FRLG emulator value")
     parser.add_argument("--phy", default="auto",
-                        help="Wi-Fi phy; default selects an AP-capable phy")
+                        help="Wi-Fi phy; default selects an unused AP-capable phy")
     parser.add_argument("--keys", default="~/.switch/prod.keys")
     parser.add_argument("--comm-id",
                         help="LDN local_communication_id in hexadecimal")
